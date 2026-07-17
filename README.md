@@ -31,20 +31,31 @@ through `DecompressionStream`, shows a progress bar, and hands the bytes
 to the VM worker zero-copy. `coi-serviceworker` provides the COOP/COEP
 isolation SharedArrayBuffer needs (GitHub Pages can't send headers).
 
-The OS boots and logs in with no local setup. For agent chat + Persistent
-mode, run the local bridge next to it:
+The OS boots and logs in with no local setup. For agent chat, point the
+page at any OpenAI-compatible server on the same machine (LM Studio,
+Ollama, omlx, llama.cpp server…): enter its base URL in the LLM field
+(e.g. `http://127.0.0.1:1234/v1`), hit **Test** (checks reachability +
+CORS, lists models), pick a model. The VM reads it at boot; changing it
+after boot needs a reload. CORS must be allowed on the server
+(LM Studio: Enable CORS; Ollama: `OLLAMA_ORIGINS=*`).
 
-```sh
-# 1. any OpenAI-compatible model server on 127.0.0.1:8873 (or set ELIZA_MODEL_UPSTREAM)
-# 2. the bridge:
-python3 serve.py 8901
-# 3. reload the Pages site — it probes http://127.1:8901 and connects.
-```
+Loopback URLs are rewritten to `127.1` for the guest: loopback for the
+browser (usable from an https page) but not string-matched by the guest's
+`no_proxy=localhost,127.0.0.1`, so in-guest model calls still route
+through the wasm fetch proxy. Overrides: `?backend=<url>`, `?model=<name>`.
 
-`127.1` is deliberate: it is loopback for the browser (usable from an https
-page) but not string-matched by the guest's `no_proxy=localhost,127.0.0.1`,
-so in-guest model calls still route through the wasm fetch proxy.
-Overrides: `?backend=<origin>` (any CORS-enabled bridge), `?model=<name>`.
+Boot is fully automatic: login, Persistent-storage unlock (auto-generated
+passphrase in localStorage) and agent start all auto-type. State lives in
+the browser: the service worker (eliza-sw.js) answers the guest's
+`/__persist/` PUT/GET from the Cache API, so the sealed `~/.eliza`
+survives reloads with no local server. Saving is manual — click **Save
+state** (or type `/save`) before reloading. `?storage=1` boots amnesic,
+`?storage=ask` gives the interactive greeter.
+
+Beside the terminal there is a chat panel — a thin UI over the same
+console chat session (the real elizaOS web client can't run here: the
+guest can only make outbound connections through the fetch proxy, so its
+server port is unreachable from the page).
 
 ## Files
 
@@ -53,7 +64,8 @@ Overrides: `?backend=<origin>` (any CORS-enabled bridge), `?model=<name>`.
 | `docs/` | boot page + wasm chunks (GitHub Pages root, also served by serve.py) |
 | `rootfs/` | guest overlay: PID1 boot script, greeter/session shell, branding |
 | `build.sh` | rootfs image → `c2w` → gzipped chunks in `docs/wasm/` |
-| `serve.py` | local bridge: COOP/COEP static server + `/v1` model reverse proxy + `/persist` blob store |
+| `serve.py` | optional local static server (COOP/COEP headers) + `/v1` model reverse proxy |
+| `docs/eliza-sw.js` | service worker: COOP/COEP shim (coi-serviceworker fork) + browser-resident `/__persist/` storage |
 | `out/` | build artifacts + logs (not committed) |
 
 ## Run fully locally
@@ -63,8 +75,8 @@ python3 serve.py 8901
 # open http://127.0.0.1:8901/  (auto-adds ?net=browser)
 ```
 
-Boot → auto-login as `eliza` → greeter → pick `2` (Persistent) →
-passphrase → agent starts → chat. `/save` seals state, `/quit` saves and
+Boot → auto-login as `eliza` → auto-unlock Persistent storage → agent
+starts → chat (panel or terminal). `/save` seals state, `/quit` saves and
 logs out, `/shell` drops to bash, `/log` tails the agent log.
 
 Networking: guest HTTP goes through `c2w-net-proxy.wasm` (in-page fetch).

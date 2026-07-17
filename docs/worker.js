@@ -61,7 +61,8 @@ onmessage = (msg) => {
                             // from the guest's point of view — see index.html guard).
                             "ELIZA_MODEL_URL=" + (getQueryParam('backend') || location.origin) + "/v1",
                             "ELIZA_MODEL_NAME=" + (getQueryParam('model') || 'gemma-4-12B-it-qat-mxfp8'),
-                            "ELIZA_PERSIST_URL=" + (getQueryParam('backend') || location.origin) + "/persist"
+                            "ELIZA_PERSIST_URL=" + (getQueryParam('persist') ||
+                                (getQueryParam('backend') || location.origin) + "/persist")
                         ];
                         listenfd = 4;
                         startWasi(wasm, ttyClient, args, env, fds, listenfd, 5);
@@ -78,6 +79,42 @@ function startWasi(wasm, ttyClient, args, env, fds, listenfd, connfd) {
     var wasi = new WASI(args, env, fds);
     wasiHack(wasi, ttyClient, connfd);
     wasiHackSocket(wasi, listenfd, connfd);
+    if (getQueryParam('clock') == 'snap') {
+        // Experiment: report wall-clock time as (wizer snapshot time + real
+        // elapsed) — the resumed kernel otherwise sees a many-hour RTC jump.
+        var SNAP_MS = Date.parse("2026-07-17T04:30:00Z");
+        var t0 = performance.now();
+        var _ctg = wasi.wasiImport.clock_time_get;
+        wasi.wasiImport.clock_time_get = (id, prec, ptr) => {
+            var r = _ctg.apply(wasi.wasiImport, [id, prec, ptr]);
+            if (id === 0 && r === 0) {
+                var buf = new DataView(wasi.inst.exports.memory.buffer);
+                var ns = BigInt(SNAP_MS) * 1000000n +
+                         BigInt(Math.round((performance.now() - t0) * 1e6));
+                buf.setBigUint64(ptr, ns, true);
+            }
+            return r;
+        };
+        dbg("worker: clock spoof active (snapshot era)");
+    }
+    // Liveness heartbeat: counts WASI activity so a dark boot can be told
+    // apart from a hung one (visible via the eliza-dbg BroadcastChannel).
+    // The worker thread blocks inside wasi.start forever, so the heartbeat
+    // has to be emitted from inside an import call, not from a timer.
+    var hb = { clock: 0, poll: 0, write: 0, last: Date.now() };
+    var hbTick = function () {
+        var now = Date.now();
+        if (now - hb.last >= 10000) {
+            hb.last = now;
+            dbg("vm heartbeat: clock=" + hb.clock + " poll=" + hb.poll + " write=" + hb.write);
+        }
+    };
+    var _hbClock = wasi.wasiImport.clock_time_get;
+    wasi.wasiImport.clock_time_get = function () { hb.clock++; hbTick(); return _hbClock.apply(wasi.wasiImport, arguments); };
+    var _hbPoll = wasi.wasiImport.poll_oneoff;
+    wasi.wasiImport.poll_oneoff = function () { hb.poll++; hbTick(); return _hbPoll.apply(wasi.wasiImport, arguments); };
+    var _hbWrite = wasi.wasiImport.fd_write;
+    wasi.wasiImport.fd_write = function () { hb.write++; hbTick(); return _hbWrite.apply(wasi.wasiImport, arguments); };
     dbg("worker: compiling + instantiating wasm…");
     WebAssembly.instantiate(wasm, {
         "wasi_snapshot_preview1": wasi.wasiImport,
