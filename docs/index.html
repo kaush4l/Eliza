@@ -227,7 +227,7 @@
       // transferred (zero-copy) to the VM worker.
       async function loadImage() {
         status("loading image manifest…", 0);
-        const mf = await (await fetch("wasm/manifest.json")).json();
+        const mf = await (await fetch("wasm/manifest.json", { cache: "no-store" })).json();
         const raw = new Uint8Array(mf.raw_total);
         let rawOff = 0;
         const ds = new DecompressionStream("gzip");
@@ -245,7 +245,9 @@
         let got = 0;
         const totalMB = Math.round(mf.gz_total / 1048576);
         for (const name of mf.parts) {
-          const resp = await fetch("wasm/" + name);
+          // gz_total in the query string busts browser/CDN caches whenever
+          // the image content changes (part filenames stay the same).
+          const resp = await fetch("wasm/" + name + "?g=" + mf.gz_total);
           if (!resp.ok) throw new Error(name + ": HTTP " + resp.status);
           const rd = resp.body.getReader();
           for (;;) {
