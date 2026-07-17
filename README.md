@@ -25,7 +25,7 @@ contract in c2w's terminal form, like the upstream container2wasm demos:
 ## Hosted on GitHub Pages
 
 The site is static-hostable: `docs/` is the Pages root
-(https://kaush4l.github.io/eliza/). The 676MB image ships as gzipped
+(https://kaush4l.github.io/Eliza/). The 676MB image ships as gzipped
 90MB split chunks (GitHub rejects files >100MB); the page streams them
 through `DecompressionStream`, shows a progress bar, and hands the bytes
 to the VM worker zero-copy. `coi-serviceworker` provides the COOP/COEP
