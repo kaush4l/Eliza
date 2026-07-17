@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>elizaOS Live — WASM edition</title>
+    <!-- Enables SharedArrayBuffer on hosts that can't send COOP/COEP headers
+         (GitHub Pages). No-op when the server already sends them (serve.py). -->
+    <script src="./coi-serviceworker.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@4.17.0/css/xterm.css">
+    <style>
+      body { background: #0b0e14; color: #e6e6e6; font-family: ui-monospace, Menlo, monospace; margin: 0; padding: 64px 16px 16px 16px; }
+      #topbar { position: fixed; top: 0; left: 0; right: 0; background: #11151f; border-bottom: 1px solid #1f2430; z-index: 10; }
+      #bar { height: 5px; background: #1f2430; }
+      #barfill { height: 100%; width: 0%; background: linear-gradient(90deg, #7aa2f7, #9ece6a); transition: width .3s; }
+      #bartext { font-size: 12px; color: #e0af68; padding: 6px 16px; white-space: pre-wrap; }
+      h1 { font-size: 16px; margin: 8px 0 4px 0; color: #7aa2f7; }
+      #sub { font-size: 12px; color: #8a8f98; margin-bottom: 10px; }
+      #sub b { color: #9ece6a; }
+      #terminal { border: 1px solid #1f2430; border-radius: 6px; padding: 4px; background: #000; }
+      details { font-size: 12px; color: #8a8f98; margin: 10px 0; max-width: 900px; }
+      summary { color: #7aa2f7; cursor: pointer; margin-bottom: 4px; }
+      details code { color: #e0af68; }
+      details li { margin: 4px 0; }
+      a { color: #7aa2f7; }
+    </style>
+  </head>
+  <body>
+    <div id="topbar">
+      <div id="bar"><div id="barfill"></div></div>
+      <div id="bartext">preparing…</div>
+    </div>
+    <h1>elizaOS Live — WASM edition</h1>
+    <div id="sub">Debian-based elizaOS in your browser via container2wasm (Bochs x86_64).
+      Default login: <b>eliza</b> / password: <b>eliza</b> (auto-typed on boot) — the greeter then offers Amnesia or Persistent storage.</div>
+    <div id="terminal"></div>
+    <details id="howto">
+      <summary>First-time setup: connect an LLM (and enable Persistent mode)</summary>
+      <p>The OS boots and logs in with no setup, but agent chat needs an
+      OpenAI-compatible model server, and Persistent mode needs somewhere to
+      store its sealed state. Both come from a small local bridge:</p>
+      <ol>
+        <li>Run a local OpenAI-compatible model server (LM Studio, llama.cpp
+          server, vLLM, omlx…), e.g. <code>gemma-4-12B-it-qat-mxfp8</code> at
+          <code>http://127.0.0.1:8873/v1</code>.</li>
+        <li>Download <a href="https://raw.githubusercontent.com/kaush4l/Eliza/main/serve.py">serve.py</a>
+          from the repo and run <code>python3 serve.py 8901</code>.
+          Different model port: <code>ELIZA_MODEL_UPSTREAM=http://127.0.0.1:PORT python3 serve.py 8901</code>.</li>
+        <li>Reload this page — it auto-detects the bridge on
+          <code>http://127.1:8901</code> and shows the backend in the status bar.
+          (Or open <code>http://127.0.0.1:8901/</code> directly to serve everything locally.)</li>
+      </ol>
+      <p>Overrides: <code>?backend=&lt;origin&gt;</code> any CORS-enabled bridge origin ·
+        <code>?model=&lt;name&gt;</code> model id · <code>?autologin=0</code> type the login yourself.</p>
+      <p>In the greeter pick <code>[1]</code> Amnesia (nothing survives reload) or
+        <code>[2]</code> Persistent (passphrase-sealed <code>~/.eliza</code>, restored next boot).
+        Chat commands: <code>/save /quit /shell /log</code>. First agent start under
+        emulation takes several minutes.</p>
+    </details>
+    <script src="https://cdn.jsdelivr.net/npm/xterm@4.17.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-pty@0.9.4/index.js"></script>
+    <script src="./stack.js"></script>
+    <script src="./ws-delegate.js"></script>
+    <script>
+      window.__dbg = [];
+      new BroadcastChannel("eliza-dbg").onmessage = (e) => { window.__dbg.push(e.data); };
+      const barfill = document.getElementById("barfill");
+      const bartext = document.getElementById("bartext");
+      const status = (t, pct) => {
+        bartext.textContent = t;
+        if (pct !== undefined) barfill.style.width = pct + "%";
+      };
+
+      // Networking runs through the in-page fetch proxy. The guest's model /
+      // persistence URLs must NOT be loopback-named (the guest's own no_proxy
+      // covers localhost/127.0.0.1, so it would resolve them to itself):
+      //  - page on 127.0.0.1 (serve.py): use the LAN origin serve.py advertises.
+      //  - page on a remote host (GitHub Pages): probe a local serve.py bridge
+      //    as http://127.1:8901 — "127.1" is loopback to the browser (usable
+      //    from an https page) but not string-matched by the guest's no_proxy.
+      (async () => {
+        const params = new URLSearchParams(location.search);
+        if (!params.has("net")) {
+          params.set("net", "browser");
+          location.replace(location.pathname + "?" + params.toString());
+          return;
+        }
+        let backend = params.get("backend") || null;
+        const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
+        if (!backend) {
+          if (loopback) {
+            try {
+              const info = await (await fetch("server-info.json")).json();
+              if (info.lan_origin) backend = info.lan_origin;
+            } catch (e) { /* fall through */ }
+          } else {
+            try {
+              const probe = await fetch("http://127.1:8901/server-info.json",
+                { signal: AbortSignal.timeout(2000) });
+              if (probe.ok) backend = "http://127.1:8901";
+            } catch (e) { /* no local bridge — boot without an LLM */ }
+          }
+        }
+        window.__backend = backend;
+
+        try {
+          const imageParam = params.get("image");
+          if (imageParam) {
+            boot(backend, new URL(imageParam, location.href).href, null);
+          } else {
+            boot(backend, "chunked-image", await loadImage());
+          }
+        } catch (e) {
+          status("FAILED to load the elizaOS image: " + e, 0);
+        }
+      })();
+
+      // Fetch the gzipped image chunks (kept <100MB each for GitHub), stream
+      // them through DecompressionStream into one ArrayBuffer that gets
+      // transferred (zero-copy) to the VM worker.
+      async function loadImage() {
+        status("loading image manifest…", 0);
+        const mf = await (await fetch("wasm/manifest.json")).json();
+        const raw = new Uint8Array(mf.raw_total);
+        let rawOff = 0;
+        const ds = new DecompressionStream("gzip");
+        const drained = (async () => {
+          const r = ds.readable.getReader();
+          for (;;) {
+            const { value, done } = await r.read();
+            if (done) break;
+            if (rawOff + value.length > raw.length) throw new Error("image larger than manifest raw_total");
+            raw.set(value, rawOff);
+            rawOff += value.length;
+          }
+        })();
+        const w = ds.writable.getWriter();
+        let got = 0;
+        const totalMB = Math.round(mf.gz_total / 1048576);
+        for (const name of mf.parts) {
+          const resp = await fetch("wasm/" + name);
+          if (!resp.ok) throw new Error(name + ": HTTP " + resp.status);
+          const rd = resp.body.getReader();
+          for (;;) {
+            const { value, done } = await rd.read();
+            if (done) break;
+            got += value.length;
+            await w.write(value);
+            const pct = Math.round(got / mf.gz_total * 90);
+            status("downloading elizaOS image — " + Math.round(got / 1048576) +
+                   " / " + totalMB + " MB (" + Math.round(got / mf.gz_total * 100) + "%)", pct);
+          }
+        }
+        await w.close();
+        await drained;
+        if (rawOff !== raw.length) throw new Error("image truncated: " + rawOff + " of " + raw.length + " bytes");
+        status("image unpacked (" + Math.round(mf.raw_total / 1048576) + " MB) — starting VM…", 95);
+        return raw.buffer;
+      }
+
+      function boot(backend, imageURL, imageData) {
+        if (typeof SharedArrayBuffer === "undefined") {
+          status("SharedArrayBuffer unavailable — reload once (service worker installing), or use a COOP/COEP host.", 0);
+          return;
+        }
+        const xterm = new Terminal({ fontSize: 13, cols: 100, rows: 32 });
+        xterm.open(document.getElementById("terminal"));
+
+        const { master, slave } = openpty();
+        let termios = slave.ioctl("TCGETS");
+        termios.iflag &= ~(ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+        termios.oflag &= ~(OPOST);
+        termios.lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+        slave.ioctl("TCSETS", new Termios(termios.iflag, termios.oflag, termios.cflag, termios.lflag, termios.cc));
+        xterm.loadAddon(master);
+        window.__term = xterm; // programmatic input hook (tests/automation)
+
+        window.__imageURL = imageURL; // debug hook
+        const workerQuery = location.search + (backend ? "&backend=" + encodeURIComponent(backend) : "");
+        const worker = new Worker("./worker.js" + workerQuery);
+        worker.addEventListener("error", (e) => status("VM worker error: " + e.message, 0));
+        const netParam = getNetParam();
+
+        status("VM starting — kernel boots in ~30-60s…", 97);
+        let nwStack;
+        if (netParam) {
+          if (netParam.mode == "delegate") {
+            nwStack = delegate(worker, imageURL, netParam.param);
+          } else if (netParam.mode == "browser") {
+            nwStack = newStack(worker, imageURL, new Worker("./stack-worker.js" + location.search),
+                               new URL("c2w-net-proxy.wasm", location.href).href, imageData);
+          }
+        }
+        if (!nwStack) {
+          worker.postMessage({ type: "init", imagename: imageURL, imagedata: imageData },
+                             imageData ? [imageData] : []);
+        }
+        new TtyServer(slave).start(worker, nwStack);
+        watchBoot(xterm, backend);
+      }
+
+      // Watch the terminal for boot milestones; auto-type the default login.
+      function watchBoot(xterm, backend) {
+        const autologin = new URLSearchParams(location.search).get("autologin") !== "0";
+        const be = backend ? "backend: " + backend : "no LLM backend (see setup below)";
+        const dbg = (m) => window.__dbg.push(Date.now() + " " + m);
+        let phase = "login";
+        let loginStable = null;
+        const timer = setInterval(() => {
+          const tail = lastLines(xterm, 6);
+          // A login attempt can get garbled right after the VM snapshot
+          // resumes (console state still settling) — retry on failure.
+          if (phase !== "login" && /Login incorrect/.test(tail) && /login: ?$/.test(tail)) {
+            dbg("autologin: login failed, retrying");
+            phase = "login";
+          }
+          // Match only a real prompt as the final line — the banner also
+          // contains "login:" and can appear partially rendered mid-stream.
+          // Require the prompt stable across two ticks: typing into a console
+          // still settling after the snapshot resume gets garbled.
+          if (phase === "login" && /(^|\n)[\w.-]+ login: ?$/.test(tail)) {
+            if (loginStable !== tail) { loginStable = tail; return; }
+            if (autologin) {
+              dbg("autologin: typing username; tail=" + JSON.stringify(tail.slice(-60)));
+              xterm.paste("eliza\n");
+              phase = "password";
+              status("logging in as eliza…", 100);
+            } else {
+              phase = "greeter";
+              status("ready — login: eliza / password: eliza · " + be, 100);
+            }
+          } else if (phase === "password" && /(^|\n)Password: ?$/.test(tail)) {
+            dbg("autologin: typing password");
+            xterm.paste("eliza\n");
+            phase = "greeter";
+          } else if (phase === "greeter" && /Select \[1\/2\]/.test(tail)) {
+            dbg("autologin: greeter reached; tail=" + JSON.stringify(tail.slice(-80)));
+            status("ready — choose storage: [1] Amnesia  [2] Persistent · " + be, 100);
+            clearInterval(timer);
+          }
+        }, 700);
+      }
+
+      function lastLines(xterm, n) {
+        const b = xterm.buffer.active;
+        const out = [];
+        for (let i = Math.max(0, b.length - n); i < b.length; i++) {
+          const line = b.getLine(i);
+          if (line) out.push(line.translateToString(true));
+        }
+        return out.join("\n");
+      }
+
+      function getNetParam() {
+        const s = new URLSearchParams(location.search).get("net");
+        if (!s) return null;
+        const i = s.indexOf("=");
+        return i < 0 ? { mode: s, param: undefined } : { mode: s.slice(0, i), param: s.slice(i + 1) };
+      }
+    </script>
+  </body>
+</html>

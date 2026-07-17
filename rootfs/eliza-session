@@ -1,0 +1,178 @@
+#!/bin/bash
+# elizaOS Live greeter + session shell (login shell of user `eliza`).
+# Mirrors the elizaOS Live greeter contract: pick storage mode each boot —
+# Amnesia (nothing survives) or Persistent (passphrase-sealed ~/.eliza,
+# stored via the host page server), then hands over to the elizaOS app.
+
+set -u
+[ -f /etc/eliza-wasm-env ] && . /etc/eliza-wasm-env
+
+ELIZA_HOME="$HOME/.eliza"
+PROJECT_DIR=/opt/eliza
+API=http://127.0.0.1:3000
+ccurl() { curl -s --noproxy "*" "$@"; }
+MODEL_NAME="${ELIZA_MODEL_NAME:-gemma-4-12B-it-qat-mxfp8}"
+MODEL_URL="${ELIZA_MODEL_URL:-http://host.docker.internal:8873/v1}"
+PERSIST_URL="${ELIZA_PERSIST_URL:-}"
+STATE_FILE="state.tar.gz.enc"
+MODE=amnesia
+PASSPHRASE=""
+
+banner() {
+    echo
+    echo "  +---------------------------------------------+"
+    echo "  |   elizaOS Live -- WASM edition              |"
+    echo "  |   the agentic operating system              |"
+    echo "  +---------------------------------------------+"
+    echo
+}
+
+choose_storage() {
+    echo "Storage mode for this boot (elizaOS Live greeter):"
+    echo "  [1] Amnesia     -- RAM only, nothing survives reload (default)"
+    echo "  [2] Persistent  -- passphrase-sealed ~/.eliza, survives reload"
+    printf "Select [1/2]: "
+    read -r choice || choice=1
+    case "$choice" in
+        2)
+            if [ -z "$PERSIST_URL" ]; then
+                echo "! No persistence endpoint configured (ELIZA_PERSIST_URL unset)."
+                echo "  Falling back to amnesia mode."
+                return
+            fi
+            printf "Persistent Storage passphrase (new passphrase creates storage): "
+            stty -echo 2>/dev/null; read -r PASSPHRASE; stty echo 2>/dev/null; echo
+            if [ -z "$PASSPHRASE" ]; then
+                echo "Empty passphrase -- persisted data stays sealed. Amnesia for this boot."
+                return
+            fi
+            MODE=persistent
+            restore_state
+            ;;
+        *) echo "Amnesia mode: fresh session, nothing will be saved." ;;
+    esac
+}
+
+restore_state() {
+    echo "Unlocking Persistent Storage..."
+    # plain curl: persistence endpoint sits on the host page server and is
+    # only reachable through the wasm fetch proxy (http_proxy) — never
+    # bypass the proxy here (unlike the in-guest API calls).
+    code=$(curl -s -o /tmp/state.enc -w '%{http_code}' "$PERSIST_URL/$STATE_FILE" || echo 000)
+    if [ "$code" = "200" ] && [ -s /tmp/state.enc ]; then
+        if openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$PASSPHRASE" \
+            -in /tmp/state.enc 2>/dev/null | tar xzf - -C "$HOME" 2>/dev/null; then
+            echo "[ok] Persistent Storage unlocked -- previous ~/.eliza restored."
+        else
+            echo "[fail] Wrong passphrase -- persisted data stays sealed."
+            echo "  Continuing in amnesia mode."
+            MODE=amnesia
+        fi
+        rm -f /tmp/state.enc
+    else
+        echo "No persisted state found -- creating new Persistent Storage."
+        mkdir -p "$ELIZA_HOME"
+    fi
+}
+
+save_state() {
+    [ "$MODE" = "persistent" ] || { echo "(amnesia mode -- nothing saved)"; return; }
+    echo "Sealing ~/.eliza to Persistent Storage..."
+    tar czf - -C "$HOME" .eliza 2>/dev/null \
+        | openssl enc -aes-256-cbc -pbkdf2 -salt -pass "pass:$PASSPHRASE" \
+        > /tmp/state-save.enc \
+        && curl -s -X PUT --data-binary @/tmp/state-save.enc "$PERSIST_URL/$STATE_FILE" >/dev/null \
+        && echo "[ok] Saved." || echo "[fail] Save failed."
+    rm -f /tmp/state-save.enc
+}
+
+start_agent() {
+    mkdir -p "$ELIZA_HOME"
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-sk-local}"
+    export OPENAI_BASE_URL="$MODEL_URL"
+    export OPENAI_SMALL_MODEL="$MODEL_NAME"
+    export OPENAI_LARGE_MODEL="$MODEL_NAME"
+    export OPENAI_EMBEDDING_MODEL="$MODEL_NAME"
+    export OPENAI_EMBEDDING_DIMENSIONS=768
+    export PGLITE_DATA_DIR="$ELIZA_HOME/db"
+    export no_proxy="localhost,127.0.0.1${no_proxy:+,$no_proxy}"
+    export NO_PROXY="$no_proxy"
+
+    echo
+    echo "Starting elizaOS app (model: $MODEL_NAME @ $MODEL_URL)..."
+    echo "First start under emulation can take a while -- /log shows progress."
+    cd "$PROJECT_DIR" || return 1
+    nohup bun node_modules/@elizaos/cli/dist/index.js start \
+        > "$HOME/eliza.log" 2>&1 &
+    AGENT_PID=$!
+
+    i=0
+    until ccurl --max-time 2 "$API/api/agents" 2>/dev/null | grep -q '"success":true'; do
+        i=$((i+1))
+        if ! kill -0 $AGENT_PID 2>/dev/null; then
+            echo; echo "[fail] elizaOS app exited early -- tail ~/eliza.log:"; tail -5 "$HOME/eliza.log"; return 1
+        fi
+        printf '\r  booting elizaOS app... %ss' $((i*5))
+        sleep 5
+    done
+    echo
+    AGENT_ID=$(ccurl "$API/api/agents" | jq -r '.data.agents[0].id')
+    AGENT_NAME=$(ccurl "$API/api/agents" | jq -r '.data.agents[0].name')
+    echo "[ok] Agent '$AGENT_NAME' is up ($AGENT_ID)"
+}
+
+open_channel() {
+    USER_ID=5c9a4a5f-289f-42e0-8f4f-7f9d2f4be4a1
+    CH=$(ccurl -X POST "$API/api/messaging/central-channels" \
+        -H 'Content-Type: application/json' \
+        -d "{\"name\":\"console\",\"server_id\":\"00000000-0000-0000-0000-000000000000\",\"participantCentralUserIds\":[\"$USER_ID\",\"$AGENT_ID\"],\"type\":\"DM\"}" \
+        | jq -r '.data.id')
+    [ -n "$CH" ] && [ "$CH" != "null" ] || { echo "[fail] could not open channel"; return 1; }
+}
+
+chat_loop() {
+    echo
+    echo "Chat with $AGENT_NAME. Commands: /save  /quit  /shell  /log"
+    echo "--------------------------------------------------"
+    while true; do
+        printf '\nyou> '
+        read -r line || line="/quit"
+        case "$line" in
+            "") continue ;;
+            /quit)  echo "Shutting down elizaOS app..."; kill $AGENT_PID 2>/dev/null; sleep 2; save_state; echo "Bye."; exit 0 ;;
+            /save)  save_state; continue ;;
+            /shell) echo "(type 'exit' to return to chat)"; bash -i; continue ;;
+            /log)   tail -15 "$HOME/eliza.log"; continue ;;
+        esac
+        before=$(ccurl "$API/api/messaging/central-channels/$CH/messages?limit=1" \
+            | jq -r '.data.messages[0].id // "none"')
+        payload=$(jq -cn --arg ch "$CH" --arg u "$USER_ID" --arg c "$line" \
+            '{channel_id:$ch, server_id:"00000000-0000-0000-0000-000000000000",
+              author_id:$u, author_display_name:"user", content:$c,
+              source_type:"api", raw_message:{}}')
+        ccurl -X POST "$API/api/messaging/ingest-external" \
+            -H 'Content-Type: application/json' -d "$payload" >/dev/null
+        printf '%s is thinking...' "$AGENT_NAME"
+        reply=""
+        t=0
+        while [ $t -lt 300 ]; do
+            sleep 3; t=$((t+3)); printf '.'
+            reply=$(ccurl "$API/api/messaging/central-channels/$CH/messages?limit=5" \
+                | jq -r --arg before "$before" \
+                  '[.data.messages[] | select(.sourceType=="agent_response")][0] // empty
+                   | select(.id != $before) | .content' 2>/dev/null)
+            if [ -n "$reply" ]; then
+                printf '\r%*s\r' 60 ''
+                echo "$AGENT_NAME> $reply"
+                break
+            fi
+        done
+        [ -z "$reply" ] && printf '\n(no reply after %ss -- check /log)\n' "$t"
+    done
+}
+
+banner
+choose_storage
+start_agent || { echo "Dropping to shell."; exec bash -i; }
+open_channel || { echo "Dropping to shell."; exec bash -i; }
+chat_loop

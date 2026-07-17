@@ -1,0 +1,26 @@
+#!/bin/sh
+# elizaOS Live (WASM edition) — PID1 entrypoint under container2wasm init.
+# Captures the env injected by the wasm runtime (proxy config, model URL),
+# then presents a real login prompt on the console.
+
+# Persist runtime env for post-login sessions (login(1) wipes environ).
+{
+    echo "# generated at boot by /sbin/eliza-boot"
+    for var in SSL_CERT_FILE http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY ELIZA_MODEL_URL ELIZA_MODEL_NAME ELIZA_PERSIST_URL; do
+        eval "val=\${$var}"
+        [ -n "$val" ] && printf 'export %s="%s"\n' "$var" "$val"
+    done
+} > /etc/eliza-wasm-env
+chmod 644 /etc/eliza-wasm-env
+
+echo elizaos > /proc/sys/kernel/hostname 2>/dev/null || true
+
+cat /etc/eliza-banner 2>/dev/null
+
+# Real login loop (user: eliza / password: eliza).
+while true; do
+    /bin/login
+    echo
+    echo "Session ended. Returning to login."
+    sleep 2
+done
