@@ -143,8 +143,17 @@ function connect(name, shared, conn, certbuf) {
                     streamStatus[0] = -1;
                     break;
                 }
+                // Guest-visible sentinel URLs (llm.eliza.internal, …) map to
+                // real targets the page can fetch — set by boot() in index.html.
+                var addr = new TextDecoder().decode(req_.address);
+                for (const [prefix, target] of (self.__guestURLMap || [])) {
+                    if (addr.startsWith(prefix)) {
+                        addr = target + addr.slice(prefix.length);
+                        break;
+                    }
+                }
                 var connObj = {
-                    address: new TextDecoder().decode(req_.address),
+                    address: addr,
                     request: reqObj,
                     requestSent: false,
                     reqBodybuf: new Uint8Array(0),

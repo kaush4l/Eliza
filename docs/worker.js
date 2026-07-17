@@ -56,13 +56,14 @@ onmessage = (msg) => {
                             "http_proxy=http://192.168.127.253:80",
                             "HTTPS_PROXY=http://192.168.127.253:80",
                             "HTTP_PROXY=http://192.168.127.253:80",
-                            // elizaOS Live: model + persistence endpoints, resolved
-                            // page-side by the fetch proxy (must not be loopback
-                            // from the guest's point of view — see index.html guard).
-                            "ELIZA_MODEL_URL=" + (getQueryParam('backend') || location.origin) + "/v1",
+                            // elizaOS Live: fixed sentinel URLs — the page-side
+                            // fetch proxy rewrites them to the real LLM/persist
+                            // targets (stack.js). Loopback or real hostnames must
+                            // never appear here: the guest's no_proxy would
+                            // shadow them (bun canonicalizes 127.1 → 127.0.0.1).
+                            "ELIZA_MODEL_URL=http://llm.eliza.internal/v1",
                             "ELIZA_MODEL_NAME=" + (getQueryParam('model') || 'gemma-4-12B-it-qat-mxfp8'),
-                            "ELIZA_PERSIST_URL=" + (getQueryParam('persist') ||
-                                (getQueryParam('backend') || location.origin) + "/persist")
+                            "ELIZA_PERSIST_URL=http://persist.eliza.internal/__persist"
                         ];
                         listenfd = 4;
                         startWasi(wasm, ttyClient, args, env, fds, listenfd, 5);

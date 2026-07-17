@@ -81,7 +81,7 @@ save_state() {
     tar czf - -C "$HOME" .eliza 2>/dev/null \
         | openssl enc -aes-256-cbc -pbkdf2 -salt -pass "pass:$PASSPHRASE" \
         > /tmp/state-save.enc \
-        && curl -s -X PUT --data-binary @/tmp/state-save.enc "$PERSIST_URL/$STATE_FILE" >/dev/null \
+        && curl -sf -X PUT --data-binary @/tmp/state-save.enc "$PERSIST_URL/$STATE_FILE" >/dev/null \
         && echo "[ok] Saved." || echo "[fail] Save failed."
     rm -f /tmp/state-save.enc
 }

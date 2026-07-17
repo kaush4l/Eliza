@@ -39,10 +39,12 @@ CORS, lists models), pick a model. The VM reads it at boot; changing it
 after boot needs a reload. CORS must be allowed on the server
 (LM Studio: Enable CORS; Ollama: `OLLAMA_ORIGINS=*`).
 
-Loopback URLs are rewritten to `127.1` for the guest: loopback for the
-browser (usable from an https page) but not string-matched by the guest's
-`no_proxy=localhost,127.0.0.1`, so in-guest model calls still route
-through the wasm fetch proxy. Overrides: `?backend=<url>`, `?model=<name>`.
+The guest itself only ever sees fixed sentinel URLs
+(`http://llm.eliza.internal/v1`, `http://persist.eliza.internal`); the
+in-page fetch proxy rewrites them to the real targets. That keeps them
+clear of the guest's `no_proxy=localhost,127.0.0.1` (loopback aliases
+like `127.1` don't survive — the guest's HTTP client canonicalizes them
+back to `127.0.0.1`). Overrides: `?backend=<url>`, `?model=<name>`.
 
 Boot is fully automatic: login, Persistent-storage unlock (auto-generated
 passphrase in localStorage) and agent start all auto-type. State lives in
@@ -80,10 +82,9 @@ starts → chat (panel or terminal). `/save` seals state, `/quit` saves and
 logs out, `/shell` drops to bash, `/log` tails the agent log.
 
 Networking: guest HTTP goes through `c2w-net-proxy.wasm` (in-page fetch).
-The guest reaches the model via a non-loopback-named origin (LAN origin
-locally, `127.1` from Pages), which serve.py reverse-proxies to
-`127.0.0.1:8873`. The eliza server's own localhost calls bypass the proxy
-via `no_proxy`.
+The guest addresses the model as `http://llm.eliza.internal/v1`; the page
+rewrites that to the URL in the LLM field before fetching. The eliza
+server's own localhost calls bypass the proxy via `no_proxy`.
 
 ## Rebuild
 

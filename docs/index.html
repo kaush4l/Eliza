@@ -141,10 +141,11 @@
       };
 
       // Guest HTTP goes through the in-page fetch proxy, so any LLM the page
-      // can fetch, eliza can reach. One catch: the guest's own
-      // no_proxy=localhost,127.0.0.1 would shadow loopback URLs, so they get
-      // rewritten to the equivalent "127.1" — still loopback to the browser
-      // (usable from an https page), not string-matched inside the guest.
+      // can fetch, eliza can reach. The guest is handed fixed sentinel URLs
+      // (llm.eliza.internal / persist.eliza.internal) which the proxy's
+      // fetch handler rewrites to the real targets (see stack.js). Loopback
+      // aliases like "127.1" don't survive inside the guest: bun's WHATWG URL
+      // parser canonicalizes them back to 127.0.0.1, which no_proxy shadows.
       const LS_KEY = "eliza-llm";
       let booted = false;
       (async () => {
@@ -179,17 +180,10 @@
         return document.getElementById("llmurl").value.trim().replace(/\/+$/, "");
       }
 
-      // The VM worker appends "/v1" itself: hand it the base without the
-      // suffix, loopback hostnames swapped to 127.1 (see note above).
-      // Built as a string: the URL object would canonicalize "127.1" right
-      // back to "127.0.0.1", which the guest's no_proxy shadows.
-      function guestOrigin(base) {
-        let u;
-        try { u = new URL(base); } catch (e) { return base; }
-        let host = u.hostname;
-        if (["127.0.0.1", "localhost", "[::1]"].includes(host)) host = "127.1";
-        const path = u.pathname.replace(/\/v1$/, "").replace(/\/+$/, "");
-        return u.protocol + "//" + host + (u.port ? ":" + u.port : "") + path;
+      // Full OpenAI-compatible API base (…/v1) for the entered LLM URL.
+      function llmApi() {
+        const base = llmBase();
+        return /\/v1$/.test(base) ? base : base + "/v1";
       }
 
       async function testLLM() {
@@ -273,8 +267,14 @@
           return;
         }
         const model = document.getElementById("llmmodel").value.trim();
-        const backend = guestOrigin(llmBase());
+        const backend = llmApi();
         window.__backend = backend;
+        // Sentinel → real URL map used by the fetch proxy (stack.js). The
+        // guest only ever sees the sentinel hostnames.
+        window.__guestURLMap = [
+          ["http://llm.eliza.internal/v1", backend],
+          ["http://persist.eliza.internal", location.origin],
+        ];
         booted = true;
         try { localStorage.setItem(LS_KEY, JSON.stringify({ url: llmBase(), model: model })); } catch (e) {}
         const xterm = new Terminal({ fontSize: 13, cols: 100, rows: 32 });
@@ -290,16 +290,11 @@
         window.__term = xterm; // programmatic input hook (tests/automation)
 
         window.__imageURL = imageURL; // debug hook
-        // Rebuild the worker query: raw ?backend/?model may hold loopback
-        // names the guest can't use — always pass the mapped values.
+        // The guest env uses fixed sentinel URLs; only the model name varies.
         const wq = new URLSearchParams(location.search);
         wq.delete("backend");
         wq.delete("model");
-        wq.set("backend", backend);
         if (model) wq.set("model", model);
-        // Persistent Storage lives in the browser: the service worker answers
-        // anything under /__persist/ from the Cache API (see eliza-sw.js).
-        wq.set("persist", guestOrigin(location.origin) + "/__persist");
         const worker = new Worker("./worker.js?" + wq.toString());
         worker.addEventListener("error", (e) => status("VM worker error: " + e.message, 0));
         const netParam = getNetParam();
@@ -478,7 +473,11 @@
         const out = [];
         for (let i = Math.max(0, end - n + 1); i <= end; i++) {
           const line = b.getLine(i);
-          if (line) out.push(line.translateToString(true));
+          if (!line) continue;
+          // Rejoin hard-wrapped rows into logical lines (chat replies longer
+          // than the terminal width otherwise split mid-word in the panel).
+          if (line.isWrapped && out.length) out[out.length - 1] += line.translateToString(true);
+          else out.push(line.translateToString(true));
         }
         return out.join("\n");
       }
