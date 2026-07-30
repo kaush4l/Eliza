@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8">
-    <title>elizaOS Live — WASM edition</title>
+    <title>Hermes Live — WASM edition</title>
     <!-- coi-serviceworker fork: COOP/COEP for SharedArrayBuffer on header-less
          hosts (GitHub Pages) + Cache-API-backed /__persist/ storage. -->
     <script src="./eliza-sw.js"></script>
@@ -14,30 +14,20 @@
       #barfill { height: 100%; width: 0%; background: linear-gradient(90deg, #7aa2f7, #9ece6a); transition: width .3s; }
       #bartext { font-size: 12px; color: #e0af68; padding: 6px 16px; white-space: pre-wrap; }
       h1 { font-size: 16px; margin: 8px 0 4px 0; color: #7aa2f7; }
-      #sub { font-size: 12px; color: #8a8f98; margin-bottom: 10px; }
+      #sub { font-size: 12px; color: #8a8f98; margin-bottom: 10px; max-width: 940px; }
       #sub b { color: #9ece6a; }
-      #main { display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; }
-      #terminal { border: 1px solid #1f2430; border-radius: 6px; padding: 4px; background: #000; }
-      #chat { flex: 1 1 320px; min-width: 280px; max-width: 480px; border: 1px solid #1f2430; border-radius: 6px; background: #0e1219; display: flex; flex-direction: column; }
-      #chathead { font-size: 12px; color: #7aa2f7; padding: 8px 10px; border-bottom: 1px solid #1f2430; display: flex; justify-content: space-between; align-items: center; }
-      #chatlog { flex: 1; overflow-y: auto; padding: 10px; font-size: 12px; min-height: 300px; max-height: 560px; }
-      .msg { margin: 6px 0; padding: 6px 9px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
-      .msg.you { background: #1f2430; color: #e6e6e6; margin-left: 30px; }
-      .msg.agent { background: #14263a; color: #c8d3f5; margin-right: 30px; }
-      .msg.sys { color: #8a8f98; font-style: italic; padding: 2px 0; }
-      #chatrow { display: flex; gap: 6px; padding: 8px; border-top: 1px solid #1f2430; }
-      #chatin { flex: 1; background: #11151f; color: #e6e6e6; border: 1px solid #1f2430; border-radius: 4px; padding: 6px 8px; font: inherit; }
-      #chatrow button, #chathead button { background: #1f2430; color: #7aa2f7; border: 1px solid #2a3040; border-radius: 4px; padding: 6px 10px; cursor: pointer; font: inherit; font-size: 12px; }
-      details { font-size: 12px; color: #8a8f98; margin: 10px 0; max-width: 900px; }
+      #terminal { border: 1px solid #1f2430; border-radius: 6px; padding: 4px; background: #000; display: inline-block; }
+      details { font-size: 12px; color: #8a8f98; margin: 10px 0; max-width: 940px; }
       summary { color: #7aa2f7; cursor: pointer; margin-bottom: 4px; }
       details code { color: #e0af68; }
       details li { margin: 4px 0; }
       a { color: #7aa2f7; }
       #llm { font-size: 12px; color: #8a8f98; margin: 0 0 10px 0; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
       #llm input { background: #11151f; color: #e6e6e6; border: 1px solid #1f2430; border-radius: 4px; padding: 4px 6px; font: inherit; }
-      #llm button { background: #1f2430; color: #7aa2f7; border: 1px solid #2a3040; border-radius: 4px; padding: 4px 10px; font: inherit; cursor: pointer; }
+      #llmtest, #save { background: #1f2430; color: #7aa2f7; border: 1px solid #2a3040; border-radius: 4px; padding: 4px 10px; font: inherit; cursor: pointer; }
       #llmstat.ok { color: #9ece6a; }
       #llmstat.err { color: #f7768e; }
+      #savestat { color: #8a8f98; }
     </style>
   </head>
   <body>
@@ -45,60 +35,46 @@
       <div id="bar"><div id="barfill"></div></div>
       <div id="bartext">preparing…</div>
     </div>
-    <h1>elizaOS Live — WASM edition</h1>
-    <div id="sub">Debian-based elizaOS in your browser via container2wasm (Bochs x86_64).
-      Default login: <b>eliza</b> / password: <b>eliza</b> — login, storage unlock and
-      agent start are all automatic; state persists in this browser (click <b>Save state</b> before reloading).</div>
+    <h1>Hermes Live — WASM edition</h1>
+    <div id="sub">The <b>Hermes Agent</b> on Alpine Linux, booted in your browser by
+      container2wasm (Bochs x86_64). The model never enters the VM: every API call the
+      agent makes is relayed out by this page and streamed back token by token, so
+      inference runs at your machine's native speed. The terminal below is the real
+      hermes TUI — click it and type.</div>
     <div id="llm">
       <span>LLM:</span>
-      <input id="llmurl" size="34" placeholder="http://127.0.0.1:1234/v1"
-             title="OpenAI-compatible base URL (LM Studio, Ollama, omlx, llama.cpp…)">
-      <input id="llmmodel" size="26" list="llmmodels" placeholder="model id (auto from Test)">
+      <input id="llmurl" size="34" placeholder="http://127.0.0.1:8873/v1"
+             title="OpenAI-compatible base URL (omlx, LM Studio, Ollama, llama.cpp…)">
+      <input id="llmmodel" size="28" list="llmmodels" placeholder="model id (auto from Test)">
       <datalist id="llmmodels"></datalist>
       <button id="llmtest">Test</button>
       <span id="llmstat"></span>
+      <button id="save" title="Seal ~/.hermes into this browser's storage (survives reload)">Save state</button>
+      <span id="savestat"></span>
     </div>
-    <div id="main">
-      <div id="terminal"></div>
-      <div id="chat">
-        <div id="chathead"><span>agent chat</span>
-          <button id="chatsave" title="Seal ~/.eliza into browser storage (survives reload)">Save state</button></div>
-        <div id="chatlog"><div class="msg sys">waiting for the agent — first start under emulation takes ~5–20 min…</div></div>
-        <div id="chatrow">
-          <input id="chatin" placeholder="message the agent…" disabled>
-          <button id="chatsend" disabled>Send</button>
-        </div>
-      </div>
-    </div>
+    <div id="terminal"></div>
     <details id="howto">
       <summary>Connecting your LLM</summary>
-      <p>The OS boots and logs in on its own. Agent chat needs an
-      OpenAI-compatible model server on <em>this machine</em> — LM Studio,
-      Ollama, omlx, llama.cpp server…</p>
+      <p>Hermes needs an OpenAI-compatible, tool-calling model server on
+      <em>this machine</em> — omlx, LM Studio, Ollama, llama.cpp server…</p>
       <ol>
-        <li>Start your model server with CORS allowed for this page.
-          LM Studio: Developer tab → <em>Enable CORS</em>.
-          Ollama: launch with <code>OLLAMA_ORIGINS=*</code>.</li>
-        <li>Enter its base URL above (LM Studio <code>http://127.0.0.1:1234/v1</code>,
-          Ollama <code>http://127.0.0.1:11434/v1</code>) and hit <b>Test</b> —
-          it lists the models; pick one. If the browser asks to allow local
-          network access, allow it.</li>
-        <li>Done — the VM picks the URL up at boot. Changed it after the VM
-          started? Reload the page.</li>
+        <li>Start it with CORS allowed for this page. LM Studio: Developer tab →
+          <em>Enable CORS</em>. Ollama: launch with <code>OLLAMA_ORIGINS=*</code>.</li>
+        <li>Enter its base URL above and hit <b>Test</b> — it lists the models; pick one.
+          If the browser asks to allow local network access, allow it.</li>
+        <li>Reload to apply a URL or model change after the VM has started.</li>
       </ol>
-      <p>This page is https, so the model server must be reachable via loopback
-        on the machine running the browser (browsers exempt
-        <code>127.0.0.1</code> from mixed-content rules; other hosts on your
-        LAN are blocked).</p>
-      <p><b>State:</b> boots default to Persistent mode — <code>~/.eliza</code> is
-        sealed (AES-256, auto-generated passphrase) and stored <em>in this
-        browser</em> (Cache API), restored on the next boot. Nothing leaves your
-        machine. Saving is not automatic: click <b>Save state</b> (or type
-        <code>/save</code>) before closing/reloading, or recent chat is lost.
-        Chat commands: <code>/save /quit /shell /log</code>.</p>
+      <p>This page may be served over https, so the model server must answer on
+        loopback of the machine running the browser (browsers exempt
+        <code>127.0.0.1</code> from mixed-content rules; other LAN hosts are blocked).</p>
+      <p><b>State:</b> <code>~/.hermes</code> (sessions, memories, skills) and
+        <code>~/work</code> are sealed with AES-256 under a browser-local passphrase and
+        stored <em>in this browser</em> (Cache API), then restored on the next boot.
+        Nothing leaves your machine. Saving is on demand: click <b>Save state</b>.</p>
       <p>URL overrides: <code>?backend=&lt;url&gt;</code> ·
-        <code>?model=&lt;name&gt;</code> · <code>?autologin=0</code> type the login yourself ·
-        <code>?storage=1</code> amnesia boot · <code>?storage=ask</code> pick storage in the terminal.</p>
+        <code>?model=&lt;name&gt;</code> · <code>?guest=shell</code> boot to a shell
+        instead of hermes · <code>?persist=0</code> amnesia boot ·
+        <code>?image=&lt;url&gt;</code> load an unchunked .wasm.</p>
     </details>
     <script src="https://cdn.jsdelivr.net/npm/xterm@4.17.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-pty@0.9.4/index.js"></script>
@@ -140,13 +116,15 @@
         if (pct !== undefined) barfill.style.width = pct + "%";
       };
 
-      // Guest HTTP goes through the in-page fetch proxy, so any LLM the page
-      // can fetch, eliza can reach. The guest is handed fixed sentinel URLs
-      // (llm.eliza.internal / persist.eliza.internal) which the proxy's
-      // fetch handler rewrites to the real targets (see stack.js). Loopback
-      // aliases like "127.1" don't survive inside the guest: bun's WHATWG URL
-      // parser canonicalizes them back to 127.0.0.1, which no_proxy shadows.
+      // Guest HTTP goes through the in-page fetch proxy, so any LLM the page can
+      // fetch, hermes can reach. The guest is handed fixed sentinel URLs
+      // (llm.eliza.internal / persist.eliza.internal) which the proxy's fetch
+      // handler rewrites to the real targets (see stack.js). Real loopback
+      // addresses must never appear in the guest env: a guest-side no_proxy match
+      // makes it dial its own loopback instead of going through the page.
       const LS_KEY = "eliza-llm";
+      const DEFAULT_URL = "http://127.0.0.1:8873/v1";
+      const DEFAULT_MODEL = "gemma-4-12B-it-qat-mxfp8";
       let booted = false;
       (async () => {
         const params = new URLSearchParams(location.search);
@@ -158,9 +136,9 @@
         let saved = {};
         try { saved = JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch (e) {}
         document.getElementById("llmurl").value =
-          params.get("backend") || saved.url || "http://127.0.0.1:1234/v1";
+          params.get("backend") || saved.url || DEFAULT_URL;
         document.getElementById("llmmodel").value =
-          params.get("model") || saved.model || "";
+          params.get("model") || saved.model || DEFAULT_MODEL;
         document.getElementById("llmtest").onclick = testLLM;
         testLLM(); // async, non-blocking — boot proceeds regardless
 
@@ -172,7 +150,7 @@
             boot("chunked-image", await loadImage());
           }
         } catch (e) {
-          status("FAILED to load the elizaOS image: " + e, 0);
+          status("FAILED to load the Hermes image: " + e, 0);
         }
       })();
 
@@ -189,12 +167,10 @@
       async function testLLM() {
         const stat = document.getElementById("llmstat");
         const modelIn = document.getElementById("llmmodel");
-        const base = llmBase();
         stat.className = "";
         stat.textContent = "testing…";
         try {
-          const url = (/\/v1$/.test(base) ? base : base + "/v1") + "/models";
-          const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
+          const r = await fetch(llmApi() + "/models", { signal: AbortSignal.timeout(4000) });
           if (!r.ok) throw new Error("HTTP " + r.status);
           const ids = ((await r.json()).data || []).map((m) => m.id);
           const dl = document.getElementById("llmmodels");
@@ -208,7 +184,7 @@
           stat.className = "ok";
           stat.textContent = "reachable — " + ids.length + " model" +
             (ids.length === 1 ? "" : "s") + (booted ? " (reload to apply)" : "");
-          try { localStorage.setItem(LS_KEY, JSON.stringify({ url: base, model: modelIn.value.trim() })); } catch (e) {}
+          try { localStorage.setItem(LS_KEY, JSON.stringify({ url: llmBase(), model: modelIn.value.trim() })); } catch (e) {}
         } catch (e) {
           stat.className = "err";
           stat.textContent = "unreachable (" + (e.message || e) + ") — server running with CORS on? " +
@@ -250,7 +226,7 @@
             got += value.length;
             await w.write(value);
             const pct = Math.round(got / mf.gz_total * 90);
-            status("downloading elizaOS image — " + Math.round(got / 1048576) +
+            status("downloading Hermes image — " + Math.round(got / 1048576) +
                    " / " + totalMB + " MB (" + Math.round(got / mf.gz_total * 100) + "%)", pct);
           }
         }
@@ -261,23 +237,26 @@
         return raw.buffer;
       }
 
+      const COLS = 100, ROWS = 32;
+
       function boot(imageURL, imageData) {
         if (typeof SharedArrayBuffer === "undefined") {
           status("SharedArrayBuffer unavailable — reload once (service worker installing), or use a COOP/COEP host.", 0);
           return;
         }
-        const model = document.getElementById("llmmodel").value.trim();
+        const params = new URLSearchParams(location.search);
+        const model = document.getElementById("llmmodel").value.trim() || DEFAULT_MODEL;
         const backend = llmApi();
         window.__backend = backend;
-        // Sentinel → real URL map used by the fetch proxy (stack.js). The
-        // guest only ever sees the sentinel hostnames.
+        // Sentinel → real URL map used by the fetch proxy (stack.js). The guest
+        // only ever sees the sentinel hostnames.
         window.__guestURLMap = [
           ["http://llm.eliza.internal/v1", backend],
           ["http://persist.eliza.internal", location.origin],
         ];
         booted = true;
         try { localStorage.setItem(LS_KEY, JSON.stringify({ url: llmBase(), model: model })); } catch (e) {}
-        const xterm = new Terminal({ fontSize: 13, cols: 100, rows: 32 });
+        const xterm = new Terminal({ fontSize: 13, cols: COLS, rows: ROWS });
         xterm.open(document.getElementById("terminal"));
 
         const { master, slave } = openpty();
@@ -290,93 +269,59 @@
         window.__term = xterm; // programmatic input hook (tests/automation)
 
         window.__imageURL = imageURL; // debug hook
-        // The guest env uses fixed sentinel URLs; only the model name varies.
-        const wq = new URLSearchParams(location.search);
-        wq.delete("backend");
-        wq.delete("model");
-        if (model) wq.set("model", model);
+        // Worker params become guest env (see worker.js). The LLM endpoint is a
+        // sentinel, so only the model name, terminal geometry, storage
+        // passphrase and boot mode travel through here.
+        const wq = new URLSearchParams();
+        wq.set("net", params.get("net") || "browser");
+        wq.set("model", model);
+        wq.set("cols", COLS);
+        wq.set("rows", ROWS);
+        if (params.get("guest")) wq.set("guest", params.get("guest"));
+        if (params.get("persist") !== "0") wq.set("pass", passphrase());
         const worker = new Worker("./worker.js?" + wq.toString());
         worker.addEventListener("error", (e) => status("VM worker error: " + e.message, 0));
-        const netParam = getNetParam();
 
-        status("VM starting — kernel boots in ~30-60s…", 97);
-        let nwStack;
-        if (netParam) {
-          if (netParam.mode == "delegate") {
-            nwStack = delegate(worker, imageURL, netParam.param);
-          } else if (netParam.mode == "browser") {
-            nwStack = newStack(worker, imageURL, new Worker("./stack-worker.js" + location.search),
-                               new URL("c2w-net-proxy.wasm", location.href).href, imageData);
-          }
-        }
-        if (!nwStack) {
-          worker.postMessage({ type: "init", imagename: imageURL, imagedata: imageData },
-                             imageData ? [imageData] : []);
-        }
+        status("VM starting — the kernel resumes from its snapshot in ~10-30s…", 97);
+        // Default transport is the in-page fetch relay (net=browser): no local
+        // helper, works on GitHub Pages. ?net=delegate=ws://host:port instead
+        // hands the guest raw TCP over a WebSocket, for anyone already running
+        // c2w-net locally and wanting the socket path rather than fetch.
+        const net = params.get("net");
+        const nwStack = net && net.startsWith("delegate=")
+          ? delegate(worker, imageURL, net.slice("delegate=".length), imageData)
+          : newStack(worker, imageURL, new Worker("./stack-worker.js" + location.search),
+                     new URL("c2w-net-proxy.wasm", location.href).href, imageData);
         new TtyServer(slave).start(worker, nwStack);
-        watchBoot(xterm, backend);
+        watchBoot(xterm, backend, model);
+        wireSave();
       }
 
-      // Watch the terminal for boot milestones; auto-type the default login.
-      function watchBoot(xterm, backend) {
-        const autologin = new URLSearchParams(location.search).get("autologin") !== "0";
-        const be = "LLM: " + backend;
+      // Watch the console for the boot markers /sbin/hermes-boot prints.
+      function watchBoot(xterm, backend, model) {
         const dbg = (m) => window.__dbg.push(Date.now() + " " + m);
-        let phase = "login";
-        let loginStable = null;
+        const be = model + " · " + backend;
+        let seenState = false;
         const timer = setInterval(() => {
-          const tail = lastLines(xterm, 6);
-          // A login attempt can get garbled right after the VM snapshot
-          // resumes (console state still settling) — retry on failure.
-          if (phase !== "login" && /Login incorrect/.test(tail) && /login: ?$/.test(tail)) {
-            dbg("autologin: login failed, retrying");
-            phase = "login";
+          const tail = lastLines(xterm, 14);
+          if (!seenState && /\[state\]/.test(tail)) {
+            seenState = true;
+            status("Alpine up — restoring browser-held state…", 100);
           }
-          // Match only a real prompt as the final line — the banner also
-          // contains "login:" and can appear partially rendered mid-stream.
-          // Require the prompt stable across two ticks: typing into a console
-          // still settling after the snapshot resume gets garbled.
-          if (phase === "login" && /(^|\n)[\w.-]+ login: ?$/.test(tail)) {
-            if (loginStable !== tail) { loginStable = tail; return; }
-            if (autologin) {
-              dbg("autologin: typing username; tail=" + JSON.stringify(tail.slice(-60)));
-              xterm.paste("eliza\n");
-              phase = "password";
-              status("logging in as eliza…", 100);
-            } else {
-              phase = "greeter";
-              status("ready — login: eliza / password: eliza · " + be, 100);
-            }
-          } else if (phase === "password" && /(^|\n)Password: ?$/.test(tail)) {
-            dbg("autologin: typing password");
-            xterm.paste("eliza\n");
-            phase = "greeter";
-          } else if (phase === "greeter" && /Select \[1\/2\]: ?$/.test(tail)) {
-            dbg("autologin: greeter reached; tail=" + JSON.stringify(tail.slice(-80)));
-            const storage = new URLSearchParams(location.search).get("storage") || "2";
-            if (storage === "ask") {
-              status("ready — choose storage in the terminal: [1] Amnesia  [2] Persistent · " + be, 100);
-              clearInterval(timer);
-              return;
-            }
-            xterm.paste(storage + "\n");
-            if (storage === "2") {
-              phase = "passphrase";
-              status("Persistent mode — unlocking browser storage…", 100);
-            } else {
-              phase = "agent";
-              status("Amnesia mode — agent starting (~5-20 min under emulation)…", 100);
-            }
-          } else if (phase === "passphrase" && /(^|\n)Persistent Storage passphrase[^\n]*: ?$/.test(tail)) {
-            dbg("autologin: typing storage passphrase");
-            xterm.paste(passphrase() + "\n");
-            phase = "agent";
-            status("agent starting — first start under emulation takes ~5-20 min…", 100);
-          } else if (phase === "agent" && /(^|\n)you> ?$/.test(tail)) {
-            dbg("autologin: agent ready");
-            status("agent ready — chat in the panel or the terminal · " + be, 100);
-            chatReady(xterm);
+          if (/\[hermes\] starting/.test(tail)) {
+            dbg("boot: hermes launching");
             clearInterval(timer);
+            status("hermes starting — ~2 min under emulation, then it stays warm · " + be, 100);
+            // Once prompt_toolkit takes the screen there is no line-oriented
+            // marker left to match, so watch for the TUI's own status glyph.
+            // (Matching "Hermes" would hit the boot banner immediately.)
+            const ready = setInterval(() => {
+              if (/⚕/.test(lastLines(xterm, 30))) {
+                clearInterval(ready);
+                dbg("boot: hermes TUI up");
+                status("hermes ready — type in the terminal · " + be, 100);
+              }
+            }, 1000);
           }
         }, 700);
       }
@@ -392,76 +337,41 @@
         return p;
       }
 
-      // ---- chat panel: a thin UI over the terminal chat session ----
-      let dirty = false;
-      function addMsg(cls, text) {
-        const log = document.getElementById("chatlog");
-        const div = document.createElement("div");
-        div.className = "msg " + cls;
-        div.textContent = text;
-        log.appendChild(div);
-        log.scrollTop = log.scrollHeight;
-      }
-
-      function chatReady(xterm) {
-        const input = document.getElementById("chatin");
-        const send = document.getElementById("chatsend");
-        input.disabled = send.disabled = false;
-        addMsg("sys", "agent ready — replies take ~1-2 min under emulation");
-        const sendMsg = () => {
-          const t = input.value.trim();
-          if (!t || send.disabled) return;
-          input.value = "";
-          addMsg("you", t);
-          dirty = true;
-          send.disabled = true;
-          xterm.paste(t + "\n");
-          awaitReply(xterm, () => { send.disabled = false; });
-        };
-        send.onclick = sendMsg;
-        input.addEventListener("keydown", (e) => { if (e.key === "Enter") sendMsg(); });
-        document.getElementById("chatsave").onclick = () => {
-          addMsg("sys", "sealing state to browser storage… (takes a bit under emulation)");
-          xterm.paste("/save\n");
-          const iv = setInterval(() => {
-            const t = lastLines(xterm, 4);
-            if (/\[ok\] Saved\./.test(t)) { addMsg("sys", "state saved — reload-safe"); dirty = false; clearInterval(iv); }
-            else if (/\[fail\] Save failed\./.test(t)) { addMsg("sys", "save FAILED — check the terminal"); clearInterval(iv); }
-          }, 1000);
-          setTimeout(() => clearInterval(iv), 180000);
-        };
-        window.addEventListener("beforeunload", (e) => {
-          if (dirty) { e.preventDefault(); e.returnValue = ""; }
-        });
-      }
-
-      // Scrape the agent's reply out of the terminal: once the "you> " prompt
-      // is back, walk backwards to the newest "<Agent>> " line — everything
-      // from there to the prompt is the reply.
-      function awaitReply(xterm, done) {
-        const start = Date.now();
-        const iv = setInterval(() => {
-          const lines = lastLines(xterm, 40).split("\n");
-          const finish = (fn) => { clearInterval(iv); fn && fn(); done(); };
-          if (/^you> ?$/.test(lines[lines.length - 1])) {
-            for (let i = lines.length - 2; i >= 0; i--) {
-              const m = lines[i].match(/^([A-Za-z][\w .-]{0,30})> (.*)/);
-              if (m && m[1] !== "you") {
-                const block = [m[1] + ": " + m[2]]
-                  .concat(lines.slice(i + 1, lines.length - 1))
-                  .join("\n").replace(/\s+$/, "");
-                return finish(() => addMsg("agent", block));
-              }
-              if (/^you> /.test(lines[i])) { // own echo reached first: no reply
-                if (lines.some((l) => /\(no reply after \d+s/.test(l)))
-                  return finish(() => addMsg("sys", "no reply — check /log in the terminal"));
-                break; // prompt visible but reply not printed yet — keep waiting
-              }
-            }
+      // Saving is guest-driven: the page cannot call into the VM (the proxy is
+      // outbound-only), so it leaves a nonce in the service worker's cache, the
+      // guest's watcher picks it up, seals ~/.hermes and acks the same nonce.
+      function wireSave() {
+        const btn = document.getElementById("save");
+        const stat = document.getElementById("savestat");
+        btn.onclick = async () => {
+          const nonce = String(Date.now());
+          btn.disabled = true;
+          stat.textContent = "queued — the guest polls every 10s…";
+          try {
+            await fetch("./__persist/save-req", { method: "PUT", body: nonce });
+          } catch (e) {
+            stat.textContent = "save request failed: " + e;
+            btn.disabled = false;
+            return;
           }
-          if (Date.now() - start > 360000)
-            finish(() => addMsg("sys", "still waiting… the terminal shows progress"));
-        }, 1500);
+          const started = Date.now();
+          const iv = setInterval(async () => {
+            let ack = "";
+            try {
+              const r = await fetch("./__persist/save-ack", { cache: "no-store" });
+              if (r.ok) ack = (await r.text()).trim();
+            } catch (e) {}
+            if (ack.startsWith(nonce + ":")) {
+              clearInterval(iv);
+              btn.disabled = false;
+              stat.textContent = ack.endsWith(":ok") ? "state saved — reload-safe" : "save FAILED (see terminal)";
+            } else if (Date.now() - started > 300000) {
+              clearInterval(iv);
+              btn.disabled = false;
+              stat.textContent = "no ack after 5 min — is the guest up?";
+            }
+          }, 2000);
+        };
       }
 
       function lastLines(xterm, n) {
@@ -474,19 +384,10 @@
         for (let i = Math.max(0, end - n + 1); i <= end; i++) {
           const line = b.getLine(i);
           if (!line) continue;
-          // Rejoin hard-wrapped rows into logical lines (chat replies longer
-          // than the terminal width otherwise split mid-word in the panel).
           if (line.isWrapped && out.length) out[out.length - 1] += line.translateToString(true);
           else out.push(line.translateToString(true));
         }
         return out.join("\n");
-      }
-
-      function getNetParam() {
-        const s = new URLSearchParams(location.search).get("net");
-        if (!s) return null;
-        const i = s.indexOf("=");
-        return i < 0 ? { mode: s, param: undefined } : { mode: s.slice(0, i), param: s.slice(i + 1) };
       }
     </script>
   </body>

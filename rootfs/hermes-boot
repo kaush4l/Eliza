@@ -1,0 +1,166 @@
+#!/bin/sh
+# Hermes Live (WASM edition) — PID1 entrypoint under the container2wasm init.
+#
+# The wasm runtime injects the guest env (fetch-proxy config + the sentinel
+# LLM/persistence URLs — see docs/worker.js). This script turns that into a
+# hermes config, restores the state the browser holds for us, then hands the
+# console to the real hermes TUI. No login prompt: the browser tab *is* the
+# authentication boundary, and a login race used to eat the first seconds of
+# every boot.
+set -u
+
+: "${HOME:=/root}"
+: "${HERMES_HOME:=$HOME/.hermes}"
+export HOME HERMES_HOME
+export TERM="${TERM:-xterm-256color}"
+export PATH="/opt/hermes/venv/bin:$PATH"
+
+MODEL_URL="${ELIZA_MODEL_URL:-http://llm.eliza.internal/v1}"
+MODEL_NAME="${ELIZA_MODEL_NAME:-gemma-4-12B-it-qat-mxfp8}"
+PERSIST_URL="${ELIZA_PERSIST_URL:-}"
+PASSPHRASE="${ELIZA_PASSPHRASE:-}"
+WORKDIR="$HOME/work"
+STATE_FILE="state.tar.gz.enc"
+LOG=/var/log/hermes-boot.log
+
+# The OpenAI SDK wants a key even for a keyless local server.
+export OPENAI_API_KEY="${OPENAI_API_KEY:-local}"
+export OPENAI_BASE_URL="$MODEL_URL"
+
+# Match the xterm.js geometry the page opens with: prompt_toolkit reads the
+# tty size, and the serial console defaults to 80x25.
+stty cols "${ELIZA_TERM_COLS:-100}" rows "${ELIZA_TERM_ROWS:-32}" 2>/dev/null || true
+# /proc/sys is read-only under the c2w init; the hostname is cosmetic.
+( echo hermes > /proc/sys/kernel/hostname ) 2>/dev/null || true
+
+# Always regenerate: the model + endpoint are page-owned settings, so a
+# restored config.yaml must not pin last session's LLM.
+write_config() {
+    mkdir -p "$HERMES_HOME"
+    cat > "$HERMES_HOME/config.yaml" <<EOF
+# generated at boot by /sbin/hermes-boot — edit the LLM fields in the page UI
+model:
+  default: "$MODEL_NAME"
+  provider: "custom"
+  base_url: "$MODEL_URL"
+  api_key: "local"
+terminal:
+  backend: "local"
+  cwd: "$WORKDIR"
+telemetry:
+  shared_metrics:
+    enabled: false
+display:
+  # 0 disables prompt_toolkit's idle redraw. The default (1.0s) repaints the
+  # status bar every second, and a repaint costs ~180ms of emulated CPU here —
+  # a fifth of the guest burned on a ticking clock.
+  cli_refresh_interval: 0
+platform_toolsets:
+  # Only the toolsets that actually work in this VM. The dropped ones (web,
+  # browser, vision, image_gen, tts) all need third-party API keys the browser
+  # build has no way to supply, and every tool schema is re-sent on every turn:
+  # measured 12.9K prompt tokens with the default hermes-cli bundle vs 6.97K
+  # with this list, i.e. half the prefill on a local model, per turn.
+  cli: [terminal, file, todo, memory, skills]
+EOF
+}
+
+# Persistence lives in the browser (Cache API behind the page's service
+# worker); the guest reaches it through the same fetch proxy as the LLM.
+http_get() {
+    # $1 url, $2 outfile -> prints the status code. curl already prints 000 when
+    # it never got a response, so no `|| echo 000` here: that appended a second
+    # 000 and the "is the network up yet" comparison below never matched.
+    code=$(curl -s -o "$2" -w '%{http_code}' --max-time 20 "$1" 2>/dev/null)
+    printf '%s' "${code:-000}"
+}
+
+restore_state() {
+    [ -n "$PERSIST_URL" ] && [ -n "$PASSPHRASE" ] || return 0
+    # The page's fetch proxy needs a moment after the VM resumes, and a request
+    # issued before it is listening fails outright — retry before concluding
+    # that there is nothing saved.
+    tries=0
+    while :; do
+        code=$(http_get "$PERSIST_URL/$STATE_FILE" /tmp/state.enc)
+        [ "$code" = "000" ] || break
+        tries=$((tries+1))
+        [ "$tries" -ge 8 ] && break
+        sleep 2
+    done
+    if [ "$code" != "200" ] || [ ! -s /tmp/state.enc ]; then
+        echo "[state] no saved session in this browser — starting fresh (http $code)"
+        rm -f /tmp/state.enc
+        return 0
+    fi
+    if openssl enc -d -aes-256-cbc -pbkdf2 -pass "pass:$PASSPHRASE" -in /tmp/state.enc 2>/dev/null \
+        | tar xzf - -C "$HOME" 2>/dev/null; then
+        echo "[state] restored previous session from browser storage"
+    else
+        echo "[state] saved session could not be unlocked — starting fresh"
+    fi
+    rm -f /tmp/state.enc
+}
+
+save_state() {
+    [ -n "$PERSIST_URL" ] && [ -n "$PASSPHRASE" ] || return 1
+    tar czf - -C "$HOME" .hermes work 2>/dev/null \
+        | openssl enc -aes-256-cbc -pbkdf2 -salt -pass "pass:$PASSPHRASE" > /tmp/save.enc || return 1
+    curl -sf -X PUT --data-binary @/tmp/save.enc --max-time 120 \
+        "$PERSIST_URL/$STATE_FILE" >/dev/null 2>&1
+    rc=$?
+    rm -f /tmp/save.enc
+    return $rc
+}
+
+# The page can't call into the guest (the proxy is outbound-only), so the guest
+# polls a nonce the page PUTs when its Save button is clicked and PUTs the
+# result back for the page to read.
+watch_save_requests() {
+    last=""
+    while :; do
+        sleep 10
+        code=$(http_get "$PERSIST_URL/save-req" /tmp/save-req)
+        [ "$code" = "200" ] || continue
+        req=$(cat /tmp/save-req 2>/dev/null)
+        [ -n "$req" ] && [ "$req" != "$last" ] || continue
+        last="$req"
+        if save_state; then status=ok; else status=fail; fi
+        printf '%s' "$req:$status" > /tmp/save-ack
+        curl -sf -X PUT --data-binary @/tmp/save-ack --max-time 20 \
+            "$PERSIST_URL/save-ack" >/dev/null 2>&1
+    done
+}
+
+mkdir -p "$WORKDIR" /var/log
+cat /etc/hermes-banner 2>/dev/null
+restore_state
+write_config
+
+if [ -n "$PERSIST_URL" ] && [ -n "$PASSPHRASE" ]; then
+    watch_save_requests >>"$LOG" 2>&1 &
+fi
+
+if [ "${ELIZA_GUEST_MODE:-}" = "shell" ]; then
+    echo "[hermes] shell mode — run 'hermes' when you want the agent"
+    cd "$WORKDIR" || exit 1
+    # Loop rather than exec: this is PID 1, so an exec'd shell exiting on Ctrl+D
+    # would halt the VM and force a full page reload.
+    while :; do
+        bash -l
+        echo "[hermes] shell exited — starting a new one (reload the page to stop)"
+    done
+fi
+
+cd "$WORKDIR" || exit 1
+echo "[hermes] starting — model $MODEL_NAME via $MODEL_URL"
+while :; do
+    hermes
+    echo
+    save_state && echo "[state] session saved" || true
+    printf '[hermes] exited. Enter to restart, or type "sh" for a shell: '
+    read -r answer || answer=""
+    case "$answer" in
+        sh|shell) bash -l ;;
+    esac
+done

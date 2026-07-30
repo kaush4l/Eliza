@@ -184,25 +184,14 @@ function connect(name, shared, conn, certbuf) {
                         })),
                         connObj.done = false;
                         connObj.respBodybuf = new Uint8Array(0);
-                        if (resp.ok) {
-                            resp.arrayBuffer().then((data) => {
-                                connObj.respBodybuf = new Uint8Array(data);
-                                connObj.done = true;
-                            }).catch((error) => {
-                                connObj.respBodybuf = new Uint8Array(0);
-                                connObj.done = true;
-                                console.log("failed to fetch body: " + error);
-                            });
-                        } else {
-                            connObj.done = true;
-                        }
+                        pumpBody(connObj, resp);
                     }).catch((error) => {
                         connObj.response = new TextEncoder().encode(JSON.stringify({
                             status: 503,
                             statusText: "Service Unavailable",
                         }))
                         connObj.respBodybuf = new Uint8Array(0);
-                        connObj.done = true;
+                        endBody(connObj);
                     });
                 }
                 break;
@@ -227,17 +216,40 @@ function connect(name, shared, conn, certbuf) {
                 }
                 break;
             case "http_readbody":
-                if ((httpConnections[req_.id] == undefined) || (httpConnections[req_.id].response == undefined)) {
+                var bodyConn = httpConnections[req_.id];
+                if ((bodyConn == undefined) || (bodyConn.response == undefined)) {
                     console.log(name + ":" + "response body is not available");
                     streamStatus[0] = -1;
                     break;
                 }
-                httpConnections[req_.id].respBodybuf = serveData(httpConnections[req_.id].respBodybuf, req_.len);
-                streamStatus[0] = 0;
-                if ((httpConnections[req_.id].done) && (httpConnections[req_.id].respBodybuf.byteLength == 0)) {
-                    streamStatus[0] = 1;
-                    delete httpConnections[req_.id]; // connection done
+                var serveBody = () => {
+                    bodyConn.respBodybuf = serveData(bodyConn.respBodybuf, req_.len);
+                    streamStatus[0] = 0;
+                    if (bodyConn.done && (bodyConn.respBodybuf.byteLength == 0)) {
+                        streamStatus[0] = 1;
+                        delete httpConnections[req_.id]; // connection done
+                    }
+                };
+                // Nothing buffered but the response is still streaming (an SSE
+                // token stream, typically): park the read and answer it when the
+                // next chunk lands. Returning 0 bytes instead would make the
+                // proxy re-poll in a tight loop for the whole generation.
+                if ((bodyConn.respBodybuf.byteLength == 0) && !bodyConn.done) {
+                    var wake = () => {
+                        if (!bodyConn.waiter) return; // already answered
+                        bodyConn.waiter = null;
+                        serveBody();
+                        Atomics.store(streamCtrl, 0, 1);
+                        Atomics.notify(streamCtrl, 0);
+                    };
+                    bodyConn.waiter = wake;
+                    // Cap the park: this channel is shared with every other
+                    // guest socket, so a slow first token must not freeze them
+                    // for more than a tick. An empty answer just re-polls.
+                    setTimeout(wake, 250);
+                    return;
                 }
+                serveBody();
                 break;
             case "send_cert":
                 certbuf.buf = appendData(certbuf.buf, req_.buf);
@@ -265,6 +277,39 @@ function connect(name, shared, conn, certbuf) {
             console.log("UNKNOWN MSG " + msg);
         }
     }
+}
+
+// Relay the response body to the guest chunk by chunk, as the network hands it
+// over. Buffering the whole body first (resp.arrayBuffer()) is fatal for an LLM
+// endpoint: the guest would receive a completed SSE stream in one burst after
+// the last token, so the agent's output could never appear incrementally and a
+// long generation looks like a hang.
+function pumpBody(connObj, resp) {
+    if (!resp.body) { // HEAD / 204 — nothing to stream
+        endBody(connObj);
+        return;
+    }
+    const reader = resp.body.getReader();
+    const read = () => {
+        reader.read().then(({ value, done }) => {
+            if (done) {
+                endBody(connObj);
+                return;
+            }
+            connObj.respBodybuf = appendData(connObj.respBodybuf, value);
+            if (connObj.waiter) connObj.waiter();
+            read();
+        }).catch((error) => {
+            console.log("failed to read response body: " + error);
+            endBody(connObj);
+        });
+    };
+    read();
+}
+
+function endBody(connObj) {
+    connObj.done = true;
+    if (connObj.waiter) connObj.waiter();
 }
 
 function appendData(data1, data2) {

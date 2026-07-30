@@ -56,14 +56,22 @@ onmessage = (msg) => {
                             "http_proxy=http://192.168.127.253:80",
                             "HTTPS_PROXY=http://192.168.127.253:80",
                             "HTTP_PROXY=http://192.168.127.253:80",
-                            // elizaOS Live: fixed sentinel URLs — the page-side
+                            // Hermes Live: fixed sentinel URLs — the page-side
                             // fetch proxy rewrites them to the real LLM/persist
                             // targets (stack.js). Loopback or real hostnames must
                             // never appear here: the guest's no_proxy would
-                            // shadow them (bun canonicalizes 127.1 → 127.0.0.1).
+                            // shadow them (URL parsers canonicalize 127.1 →
+                            // 127.0.0.1, which no_proxy then matches).
                             "ELIZA_MODEL_URL=http://llm.eliza.internal/v1",
                             "ELIZA_MODEL_NAME=" + (getQueryParam('model') || 'gemma-4-12B-it-qat-mxfp8'),
-                            "ELIZA_PERSIST_URL=http://persist.eliza.internal/__persist"
+                            "ELIZA_PERSIST_URL=http://persist.eliza.internal/__persist",
+                            // Storage passphrase (browser-local, never leaves this
+                            // machine): passed as env so the boot script unlocks
+                            // state without a typed greeter prompt. Empty = amnesia.
+                            "ELIZA_PASSPHRASE=" + (getQueryParam('pass') || ''),
+                            "ELIZA_TERM_COLS=" + (getQueryParam('cols') || '100'),
+                            "ELIZA_TERM_ROWS=" + (getQueryParam('rows') || '32'),
+                            "ELIZA_GUEST_MODE=" + (getQueryParam('guest') || '')
                         ];
                         listenfd = 4;
                         startWasi(wasm, ttyClient, args, env, fds, listenfd, 5);

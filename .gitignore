@@ -3,3 +3,4 @@ persist/
 *.log
 .DS_Store
 docs/out.wasm
+.gstack/
