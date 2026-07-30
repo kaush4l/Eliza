@@ -16,7 +16,14 @@ export TERM="${TERM:-xterm-256color}"
 export PATH="/opt/hermes/venv/bin:$PATH"
 
 MODEL_URL="${ELIZA_MODEL_URL:-http://llm.eliza.internal/v1}"
-MODEL_NAME="${ELIZA_MODEL_NAME:-gemma-4-12B-it-qat-mxfp8}"
+# No baked-in model: the page owns the endpoint, model id and key and hands them
+# over as env. An empty model means "not configured yet" — hermes still boots so
+# the shell and tools work, and the page says what is missing.
+MODEL_NAME="${ELIZA_MODEL_NAME:-}"
+MODEL_KEY="${ELIZA_MODEL_KEY:-}"
+# Context window, when the page could read it from /v1/models. Setting it skips
+# hermes' per-session auto-detect round trip.
+MODEL_CTX="${ELIZA_MODEL_CTX:-}"
 PERSIST_URL="${ELIZA_PERSIST_URL:-}"
 PASSPHRASE="${ELIZA_PASSPHRASE:-}"
 WORKDIR="$HOME/work"
@@ -24,7 +31,7 @@ STATE_FILE="state.tar.gz.enc"
 LOG=/var/log/hermes-boot.log
 
 # The OpenAI SDK wants a key even for a keyless local server.
-export OPENAI_API_KEY="${OPENAI_API_KEY:-local}"
+export OPENAI_API_KEY="${MODEL_KEY:-local}"
 export OPENAI_BASE_URL="$MODEL_URL"
 
 # Match the xterm.js geometry the page opens with: prompt_toolkit reads the
@@ -43,7 +50,8 @@ model:
   default: "$MODEL_NAME"
   provider: "custom"
   base_url: "$MODEL_URL"
-  api_key: "local"
+  api_key: "${MODEL_KEY:-local}"${MODEL_CTX:+
+  context_length: $MODEL_CTX}
 terminal:
   backend: "local"
   cwd: "$WORKDIR"
@@ -55,6 +63,12 @@ display:
   # status bar every second, and a repaint costs ~180ms of emulated CPU here —
   # a fifth of the guest burned on a ticking clock.
   cli_refresh_interval: 0
+auxiliary:
+  title_generation:
+    # Auto-titling fires a SECOND model call right after the first exchange.
+    # Measured here: two POSTs per first turn, ~20s apart, each carrying the full
+    # prompt. The title is never shown in this build, so it is pure latency.
+    enabled: false
 platform_toolsets:
   # Only the toolsets that actually work in this VM. The dropped ones (web,
   # browser, vision, image_gen, tts) all need third-party API keys the browser
@@ -132,10 +146,35 @@ watch_save_requests() {
     done
 }
 
+# Emulated disk reads run at ~1.5 MB/s and Python imports are seek-bound, so the
+# modules a turn pulls in lazily (transports, tool implementations, providers)
+# otherwise stall the FIRST message for ~40s. Importing them in a throwaway
+# process during boot moves that I/O behind the progress bar the user is already
+# watching. Measured: identical agent turn 1m45s cold vs 1m4s with the cache warm.
+# Runs to completion BEFORE hermes starts, on purpose. Backgrounding it was worse
+# than doing nothing: the two processes raced for the same seek-bound reads and the
+# warm-up's `hermes_state` import can hold the session-DB lock, which left the TUI
+# unpainted for >12 minutes. Sequential costs ~20s of boot and asks for no locks.
+# hermes_state is left out for the same reason — nothing here may touch the DB.
+warm_imports() {
+    /opt/hermes/venv/bin/python3 -c '
+import importlib
+for m in ("model_tools", "toolsets", "tools", "agent",
+          "agent.chat_completion_helpers", "agent.auxiliary_client",
+          "openai", "httpx", "pydantic"):
+    try:
+        importlib.import_module(m)
+    except Exception:
+        pass
+' >/dev/null 2>&1
+}
+
 mkdir -p "$WORKDIR" /var/log
 cat /etc/hermes-banner 2>/dev/null
 restore_state
 write_config
+echo "[hermes] warming module cache (first turn would otherwise pay for it)…"
+warm_imports
 
 if [ -n "$PERSIST_URL" ] && [ -n "$PASSPHRASE" ]; then
     watch_save_requests >>"$LOG" 2>&1 &

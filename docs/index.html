@@ -28,6 +28,22 @@
       #llmstat.ok { color: #9ece6a; }
       #llmstat.err { color: #f7768e; }
       #savestat { color: #8a8f98; }
+      /* dashboard */
+      #main { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+      #dash { flex: 1 1 340px; min-width: 320px; max-width: 520px; font-size: 12px; }
+      .card { border: 1px solid #1f2430; border-radius: 6px; background: #0e1219; margin-bottom: 10px; }
+      .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #7aa2f7; margin: 0; padding: 7px 10px; border-bottom: 1px solid #1f2430; }
+      .card .body { padding: 8px 10px; }
+      .kv { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+      .kv span:first-child { color: #8a8f98; }
+      .kv span:last-child { color: #c8d3f5; text-align: right; word-break: break-all; }
+      .kv b { color: #9ece6a; font-weight: normal; }
+      #calls { max-height: 190px; overflow-y: auto; font-size: 11px; }
+      #calls div { padding: 2px 0; border-bottom: 1px solid #161b26; display: flex; gap: 6px; }
+      #calls .m { color: #e0af68; min-width: 34px; }
+      #calls .p { color: #8a8f98; flex: 1; }
+      #calls .t { color: #9ece6a; }
+      #calls .bad .t { color: #f7768e; }
     </style>
   </head>
   <body>
@@ -37,32 +53,69 @@
     </div>
     <h1>Hermes Live — WASM edition</h1>
     <div id="sub">The <b>Hermes Agent</b> on Alpine Linux, booted in your browser by
-      container2wasm (Bochs x86_64). The model never enters the VM: every API call the
-      agent makes is relayed out by this page and streamed back token by token, so
-      inference runs at your machine's native speed. The terminal below is the real
-      hermes TUI — click it and type.</div>
+      container2wasm (Bochs x86_64). No model runs in the VM: every API call the agent
+      makes is relayed out by this page and streamed back as it arrives, so inference
+      runs at your machine's native speed against <b>any OpenAI-compatible endpoint</b>
+      you point it at — local or remote, with or without a key. Left: the real hermes
+      TUI, click it and type. Right: what the agent is doing.</div>
     <div id="llm">
       <span>LLM:</span>
-      <input id="llmurl" size="34" placeholder="http://127.0.0.1:8873/v1"
-             title="OpenAI-compatible base URL (omlx, LM Studio, Ollama, llama.cpp…)">
-      <input id="llmmodel" size="28" list="llmmodels" placeholder="model id (auto from Test)">
+      <input id="llmurl" size="30" placeholder="https://host/v1 or http://127.0.0.1:PORT/v1"
+             title="Any OpenAI-compatible base URL: local (omlx, LM Studio, Ollama, llama.cpp, vLLM) or remote (OpenAI, OpenRouter, Together…)">
+      <input id="llmmodel" size="24" list="llmmodels" placeholder="model id">
       <datalist id="llmmodels"></datalist>
-      <button id="llmtest">Test</button>
+      <input id="llmkey" size="14" type="password" placeholder="API key (optional)"
+             title="Sent only to the endpoint above. Stored in this browser's localStorage.">
+      <button id="llmtest">Connect</button>
       <span id="llmstat"></span>
-      <button id="save" title="Seal ~/.hermes into this browser's storage (survives reload)">Save state</button>
-      <span id="savestat"></span>
     </div>
-    <div id="terminal"></div>
+    <div id="main">
+      <div id="terminal"></div>
+      <div id="dash">
+        <div class="card">
+          <h2>Agent</h2>
+          <div class="body">
+            <div class="kv"><span>endpoint</span><span id="d-endpoint">—</span></div>
+            <div class="kv"><span>model</span><span id="d-model">—</span></div>
+            <div class="kv"><span>context used</span><span id="d-ctx">—</span></div>
+            <div class="kv"><span>state</span><span id="d-state">booting…</span></div>
+            <div class="kv"><span>tab memory</span><span id="d-mem">—</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>API calls (relayed out of the VM)</h2>
+          <div class="body">
+            <div class="kv"><span>calls</span><span id="d-calls"><b>0</b></span></div>
+            <div class="kv"><span>last turn</span><span id="d-turn">—</span></div>
+            <div id="calls"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Session</h2>
+          <div class="body">
+            <button id="save" title="Seal ~/.hermes into this browser's storage (survives reload)">Save state</button>
+            <span id="savestat"></span>
+          </div>
+        </div>
+      </div>
+    </div>
     <details id="howto">
-      <summary>Connecting your LLM</summary>
-      <p>Hermes needs an OpenAI-compatible, tool-calling model server on
-      <em>this machine</em> — omlx, LM Studio, Ollama, llama.cpp server…</p>
+      <summary>Connecting your LLM (any OpenAI-compatible endpoint)</summary>
+      <p>Nothing about the model is baked into the image. Hermes needs one thing: an
+      OpenAI-compatible endpoint that supports <em>tool calling</em>. Local servers
+      (omlx, LM Studio, Ollama, llama.cpp, vLLM, TGI) and hosted APIs (OpenAI,
+      OpenRouter, Together, Groq, Fireworks, your own gateway) all work.</p>
       <ol>
-        <li>Start it with CORS allowed for this page. LM Studio: Developer tab →
-          <em>Enable CORS</em>. Ollama: launch with <code>OLLAMA_ORIGINS=*</code>.</li>
-        <li>Enter its base URL above and hit <b>Test</b> — it lists the models; pick one.
-          If the browser asks to allow local network access, allow it.</li>
-        <li>Reload to apply a URL or model change after the VM has started.</li>
+        <li>Paste the base URL — it should end in <code>/v1</code>. Add an API key if the
+          endpoint needs one; it is sent only to that endpoint and stored in this
+          browser.</li>
+        <li>Press <b>Connect</b>: the page lists the endpoint's models, fills the field,
+          and picks up the advertised context window when there is one.</li>
+        <li><b>Local servers need CORS.</b> LM Studio: Developer → <em>Enable CORS</em>.
+          Ollama: <code>OLLAMA_ORIGINS=*</code>. llama.cpp/vLLM: allow this origin.</li>
+        <li>Changing endpoint, model or key after the VM has started needs a reload —
+          the values are handed to the guest at boot. Inside the TUI you can also switch
+          with hermes' own <code>/model</code> command.</li>
       </ol>
       <p><b>On the hosted (https) page, Chrome gates local-network requests.</b>
         Loopback is exempt from mixed-content rules, but <em>Local Network Access</em>
@@ -78,9 +131,29 @@
         stored <em>in this browser</em> (Cache API), then restored on the next boot.
         Nothing leaves your machine. Saving is on demand: click <b>Save state</b>.</p>
       <p>URL overrides: <code>?backend=&lt;url&gt;</code> ·
-        <code>?model=&lt;name&gt;</code> · <code>?guest=shell</code> boot to a shell
-        instead of hermes · <code>?persist=0</code> amnesia boot ·
+        <code>?model=&lt;name&gt;</code> · <code>?key=&lt;api key&gt;</code> ·
+        <code>?guest=shell</code> boot to a shell instead of hermes ·
+        <code>?persist=0</code> amnesia boot ·
         <code>?image=&lt;url&gt;</code> load an unchunked .wasm.</p>
+    </details>
+    <details>
+      <summary>Speed and the dashboard — what is possible in here</summary>
+      <p><b>Where a turn's time goes.</b> Measured on this build: the model answers in
+        the time it always would (the page talks to it directly — first byte in tens of
+        milliseconds), and the rest is the Bochs interpreter running CPython. A turn is
+        roughly ~10s of real guest CPU plus the model, and the <em>first</em> turn after
+        boot used to add ~40s of lazy Python imports, since emulated disk reads run at
+        about 1.5 MB/s. Those imports are now warmed during boot, hermes' auto-title
+        second model call is off, and the idle TUI repaint is disabled.</p>
+      <p><b>Why hermes' own web dashboard is not exposed.</b> The VM reaches the network
+        only by handing HTTP requests to this page (the c2w proxy is outbound-only);
+        nothing can dial <em>into</em> the guest, so a uvicorn server inside it is
+        unreachable — and tunnelling every dashboard asset back through a poll channel
+        would be slower than the terminal it replaces. The panel on the right is the
+        page-side equivalent: endpoint, model, live context use, agent state and every
+        relayed API call with timings, all rendered at native speed and costing the
+        guest nothing. If you want the real dashboard, run c2w-net locally and boot with
+        <code>?net=delegate=ws://…</code>, which gives the guest actual TCP.</p>
     </details>
     <script src="https://cdn.jsdelivr.net/npm/xterm@4.17.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-pty@0.9.4/index.js"></script>
@@ -128,10 +201,15 @@
       // handler rewrites to the real targets (see stack.js). Real loopback
       // addresses must never appear in the guest env: a guest-side no_proxy match
       // makes it dial its own loopback instead of going through the page.
+      // Nothing about the LLM is hardcoded: whatever is in these fields (or the
+      // ?backend / ?model / ?key params) is what the guest is told about, and it
+      // is remembered per browser. Any OpenAI-compatible endpoint works.
       const LS_KEY = "eliza-llm";
-      const DEFAULT_URL = "http://127.0.0.1:8873/v1";
-      const DEFAULT_MODEL = "gemma-4-12B-it-qat-mxfp8";
       let booted = false;
+      // Declared before the boot IIFE runs: assigning it from a later `let` would
+      // hit the temporal dead zone, and inside an async function that rejection is
+      // silent — the page would just sit on "preparing…".
+      let llmCtx = 0;
       (async () => {
         const params = new URLSearchParams(location.search);
         if (!params.has("net")) {
@@ -141,12 +219,13 @@
         }
         let saved = {};
         try { saved = JSON.parse(localStorage.getItem(LS_KEY)) || {}; } catch (e) {}
-        document.getElementById("llmurl").value =
-          params.get("backend") || saved.url || DEFAULT_URL;
-        document.getElementById("llmmodel").value =
-          params.get("model") || saved.model || DEFAULT_MODEL;
+        document.getElementById("llmurl").value = params.get("backend") || saved.url || "";
+        document.getElementById("llmmodel").value = params.get("model") || saved.model || "";
+        document.getElementById("llmkey").value = params.get("key") || saved.key || "";
+        llmCtx = saved.ctx || 0;
         document.getElementById("llmtest").onclick = testLLM;
-        testLLM(); // async, non-blocking — boot proceeds regardless
+        if (llmBase()) testLLM(); // async, non-blocking — boot proceeds regardless
+        else status("no LLM configured — fill in the endpoint and press Connect (the VM boots meanwhile)", 0);
 
         try {
           const imageParam = params.get("image");
@@ -170,15 +249,29 @@
         return /\/v1$/.test(base) ? base : base + "/v1";
       }
 
+      function llmKey() { return document.getElementById("llmkey").value.trim(); }
+
+      function rememberLLM() {
+        try {
+          localStorage.setItem(LS_KEY, JSON.stringify({
+            url: llmBase(), model: document.getElementById("llmmodel").value.trim(),
+            key: llmKey(), ctx: llmCtx,
+          }));
+        } catch (e) {}
+      }
+
       async function testLLM() {
         const stat = document.getElementById("llmstat");
         const modelIn = document.getElementById("llmmodel");
         stat.className = "";
-        stat.textContent = "testing…";
+        stat.textContent = "connecting…";
         try {
-          const r = await fetch(llmApi() + "/models", { signal: AbortSignal.timeout(4000) });
+          const h = llmKey() ? { Authorization: "Bearer " + llmKey() } : {};
+          const r = await fetch(llmApi() + "/models",
+                                { headers: h, signal: AbortSignal.timeout(8000) });
           if (!r.ok) throw new Error("HTTP " + r.status);
-          const ids = ((await r.json()).data || []).map((m) => m.id);
+          const models = (await r.json()).data || [];
+          const ids = models.map((m) => m.id);
           const dl = document.getElementById("llmmodels");
           dl.innerHTML = "";
           for (const id of ids) {
@@ -187,10 +280,16 @@
             dl.appendChild(o);
           }
           if (!modelIn.value.trim() && ids.length) modelIn.value = ids[0];
+          // Context window, when the endpoint advertises one (omlx/vLLM do). Saves
+          // hermes a per-session auto-detect round trip inside the VM.
+          const chosen = models.find((m) => m.id === modelIn.value.trim());
+          llmCtx = (chosen && (chosen.max_model_len || chosen.context_length)) || 0;
           stat.className = "ok";
-          stat.textContent = "reachable — " + ids.length + " model" +
-            (ids.length === 1 ? "" : "s") + (booted ? " (reload to apply)" : "");
-          try { localStorage.setItem(LS_KEY, JSON.stringify({ url: llmBase(), model: modelIn.value.trim() })); } catch (e) {}
+          stat.textContent = ids.length + " model" + (ids.length === 1 ? "" : "s") +
+            " · " + (modelIn.value.trim() || "pick one") +
+            (booted ? " (reload to apply)" : "");
+          rememberLLM();
+          refreshDash();
         } catch (e) {
           stat.className = "err";
           // An https page reaching http://127.0.0.1 trips Chrome's Local
@@ -258,7 +357,7 @@
           return;
         }
         const params = new URLSearchParams(location.search);
-        const model = document.getElementById("llmmodel").value.trim() || DEFAULT_MODEL;
+        const model = document.getElementById("llmmodel").value.trim();
         const backend = llmApi();
         window.__backend = backend;
         // Sentinel → real URL map used by the fetch proxy (stack.js). The guest
@@ -268,7 +367,7 @@
           ["http://persist.eliza.internal", location.origin],
         ];
         booted = true;
-        try { localStorage.setItem(LS_KEY, JSON.stringify({ url: llmBase(), model: model })); } catch (e) {}
+        rememberLLM();
         const xterm = new Terminal({ fontSize: 13, cols: COLS, rows: ROWS });
         xterm.open(document.getElementById("terminal"));
 
@@ -288,6 +387,8 @@
         const wq = new URLSearchParams();
         wq.set("net", params.get("net") || "browser");
         wq.set("model", model);
+        if (llmKey()) wq.set("key", llmKey());
+        if (llmCtx) wq.set("ctx", llmCtx);
         wq.set("cols", COLS);
         wq.set("rows", ROWS);
         if (params.get("guest")) wq.set("guest", params.get("guest"));
@@ -308,6 +409,7 @@
         new TtyServer(slave).start(worker, nwStack);
         watchBoot(xterm, backend, model);
         wireSave();
+        startDashboard(xterm);
       }
 
       // Watch the console for the boot markers /sbin/hermes-boot prints.
@@ -320,6 +422,9 @@
           if (!seenState && /\[state\]/.test(tail)) {
             seenState = true;
             status("Alpine up — restoring browser-held state…", 100);
+          }
+          if (/warming module cache/.test(tail)) {
+            status("Alpine up — warming hermes' module cache (buys it back on your first message)…", 100);
           }
           if (/\[hermes\] starting/.test(tail)) {
             dbg("boot: hermes launching");
@@ -337,6 +442,107 @@
             }, 1000);
           }
         }, 700);
+      }
+
+      // ---- dashboard ---------------------------------------------------------
+      // Everything here is observed from the page side (the relay's own traffic
+      // plus the TUI's status line), so it costs the emulated guest nothing.
+      // Hermes' built-in web dashboard cannot be used: it listens inside the VM
+      // and the c2w proxy is outbound-only, so nothing can dial in.
+      const calls = [];
+      function instrumentRelay() {
+        const origFetch = window.fetch;
+        window.fetch = function (u, o) {
+          const url = String(u);
+          if (!window.__backend || url.indexOf(window.__backend.replace(/\/v1$/, "")) !== 0) {
+            return origFetch.apply(this, arguments);
+          }
+          const t0 = performance.now();
+          const rec = { m: (o && o.method) || "GET", p: url.replace(/^https?:\/\/[^/]+/, ""), t0: t0 };
+          calls.push(rec);
+          if (calls.length > 60) calls.shift();
+          return origFetch.apply(this, arguments).then((r) => {
+            rec.status = r.status;
+            rec.head = Math.round(performance.now() - t0);
+            if (r.body) {
+              const [a, b] = r.body.tee();
+              (async () => {
+                const rd = a.getReader();
+                let n = 0;
+                for (;;) { const { done } = await rd.read(); if (done) break; n++; }
+                rec.total = Math.round(performance.now() - t0);
+                rec.chunks = n;
+                renderCalls();
+              })();
+              return new Response(b, { status: r.status, statusText: r.statusText, headers: r.headers });
+            }
+            rec.total = rec.head;
+            renderCalls();
+            return r;
+          }).catch((e) => {
+            rec.status = "ERR";
+            rec.total = Math.round(performance.now() - t0);
+            renderCalls();
+            throw e;
+          });
+        };
+      }
+
+      function renderCalls() {
+        const box = document.getElementById("calls");
+        document.getElementById("d-calls").innerHTML = "<b>" + calls.length + "</b>";
+        const done = calls.filter((c) => c.total !== undefined);
+        if (done.length) {
+          const last = done[done.length - 1];
+          document.getElementById("d-turn").textContent =
+            (last.total / 1000).toFixed(1) + "s model · " + last.head + "ms to first byte";
+        }
+        box.innerHTML = "";
+        for (const c of calls.slice(-12).reverse()) {
+          const d = document.createElement("div");
+          if (c.status !== 200 && c.status !== undefined) d.className = "bad";
+          d.innerHTML = '<span class="m">' + c.m + '</span><span class="p">' + c.p +
+            '</span><span class="t">' + (c.total === undefined ? "…" :
+              (c.total / 1000).toFixed(1) + "s" + (c.chunks ? " / " + c.chunks + " chunks" : "")) + "</span>";
+          box.appendChild(d);
+        }
+      }
+
+      function refreshDash() {
+        document.getElementById("d-endpoint").textContent = llmBase() || "not configured";
+        document.getElementById("d-model").textContent =
+          document.getElementById("llmmodel").value.trim() || "not configured";
+      }
+
+      function startDashboard(xterm) {
+        instrumentRelay();
+        refreshDash();
+        setInterval(() => {
+          // Context usage and agent state come from the TUI's own status line —
+          // no extra work asked of the guest.
+          const tail = lastLines(xterm, 34);
+          const ctx = tail.match(/([\d.]+K)\s*\/\s*([\d.]+K)/);
+          document.getElementById("d-ctx").textContent = ctx ? ctx[1] + " / " + ctx[2] : "—";
+          const busy = /msg=interrupt|\.\.\./.test(tail);
+          document.getElementById("d-state").textContent =
+            /⚕/.test(tail) ? (busy ? "thinking" : "ready") : "booting…";
+        }, 2000);
+        // Real tab footprint (wasm memory included) needs the cross-origin-isolated
+        // API; usedJSHeapSize misses the VM entirely, which is most of it.
+        const showMem = (mb, what) => {
+          document.getElementById("d-mem").textContent = mb + " MB " + what;
+        };
+        const pollMem = () => {
+          if (performance.measureUserAgentSpecificMemory) {
+            performance.measureUserAgentSpecificMemory()
+              .then((m) => showMem(Math.round(m.bytes / 1048576), "total"))
+              .catch(() => {});
+          } else if (performance.memory) {
+            showMem(Math.round(performance.memory.usedJSHeapSize / 1048576), "js heap");
+          }
+        };
+        pollMem();
+        setInterval(pollMem, 20000);
       }
 
       // Auto-generated browser-local passphrase for the sealed state blob.

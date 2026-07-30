@@ -7,8 +7,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 C2W_SRC="${C2W_SRC:-$HOME/Downloads/Dev/c2w-alpine/container2wasm}"
-# 1536 MB: highest guest RAM that survives wizer pre-boot (2048 traps OOB).
-GUEST_RAM_MB="${GUEST_RAM_MB:-1536}"
+# Guest RAM is a wasm linear-memory allocation, so it is browser-tab memory 1:1
+# — 1536MB was most of the ~1.6GB a tab used. Python + hermes peak near 250MB RSS
+# and writes land in tmpfs, so 768 keeps real headroom while halving the tab's
+# footprint. (2048 traps wizer with "out of bounds memory access".)
+GUEST_RAM_MB="${GUEST_RAM_MB:-768}"
 OUT="${OUT:-out/hermes-live-amd64.wasm}"
 
 # --- stage 1: rootfs container --------------------------------------------

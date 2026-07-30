@@ -63,7 +63,12 @@ onmessage = (msg) => {
                             // shadow them (URL parsers canonicalize 127.1 →
                             // 127.0.0.1, which no_proxy then matches).
                             "ELIZA_MODEL_URL=http://llm.eliza.internal/v1",
-                            "ELIZA_MODEL_NAME=" + (getQueryParam('model') || 'gemma-4-12B-it-qat-mxfp8'),
+                            // Model id, key and context window are whatever the page
+                            // is configured with — nothing about the LLM is baked
+                            // into the image.
+                            "ELIZA_MODEL_NAME=" + (getQueryParam('model') || ''),
+                            "ELIZA_MODEL_KEY=" + (getQueryParam('key') || ''),
+                            "ELIZA_MODEL_CTX=" + (getQueryParam('ctx') || ''),
                             "ELIZA_PERSIST_URL=http://persist.eliza.internal/__persist",
                             // Storage passphrase (browser-local, never leaves this
                             // machine): passed as env so the boot script unlocks
@@ -74,12 +79,21 @@ onmessage = (msg) => {
                             "ELIZA_GUEST_MODE=" + (getQueryParam('guest') || '')
                         ];
                         listenfd = 4;
-                        startWasi(wasm, ttyClient, args, env, fds, listenfd, 5);
+                        // Hand the buffer over and drop this closure's own
+                        // reference: wasi.start never returns, so anything still
+                        // reachable from here stays in the tab for the session.
+                        var img = wasm;
+                        wasm = null;
+                        startWasi(img, ttyClient, args, env, fds, listenfd, 5);
+                        img = null;
                     });
                     return;
                 }
             }
-            startWasi(wasm, ttyClient, args, env, fds, listenfd, 5);
+            var img0 = wasm;
+            wasm = null;
+            startWasi(img0, ttyClient, args, env, fds, listenfd, 5);
+            img0 = null;
         }
     });
 };
@@ -129,7 +143,14 @@ function startWasi(wasm, ttyClient, args, env, fds, listenfd, connfd) {
         "wasi_snapshot_preview1": wasi.wasiImport,
     }).then((inst) => {
         dbg("worker: wasm instantiated, starting VM");
-        wasi.start(inst.instance);
+        // The instantiated module owns its own copy of the code and data, so the
+        // ~300MB source buffer is dead weight from here on. Dropping the only
+        // reference lets the tab reclaim it before the VM (which never returns
+        // from wasi.start) pins the thread.
+        wasm = null;
+        const instance = inst.instance;
+        inst = null;
+        wasi.start(instance);
     }, (err) => {
         dbg("worker: instantiate FAILED: " + err);
     });

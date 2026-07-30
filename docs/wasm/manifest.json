@@ -1,1 +1,1 @@
-{"parts": ["out.wasm.gz.part-aa", "out.wasm.gz.part-ab"], "sizes": [94371840, 5228479], "gz_total": 99600319, "raw_total": 309242983}
+{"parts": ["out.wasm.gz.part-aa"], "sizes": [92120535], "gz_total": 92120535, "raw_total": 276155887}

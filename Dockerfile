@@ -42,7 +42,22 @@ RUN set -eux; \
              "$SP"/batch_runner.py "$SP"/trajectory_compressor.py \
              "$SP"/uvloop "$SP"/uvloop-*.dist-info \
              "$SP"/PIL "$SP"/pillow.libs "$SP"/pillow-*.dist-info; \
-      find /opt/hermes/venv/share/locales -maxdepth 1 -name '*.yaml' ! -name 'en.yaml' -delete 2>/dev/null || true; \
+      rm -rf "$SP"/plugins/platforms "$SP"/plugins/spotify "$SP"/plugins/video_gen \
+             "$SP"/plugins/image_gen "$SP"/plugins/teams_pipeline \
+             "$SP"/plugins/google_meet "$SP"/plugins/kanban; \
+      # cryptography is pulled in by PyJWT[crypto] for GitHub-App identity on the
+      # Skills Hub, which this build cannot use. Verified: hermes imports and
+      # runs a full turn without it (PyJWT degrades to HMAC). pygments stays —
+      # rich imports it when rendering a code block, and a missing import there
+      # would break replies rather than a feature nobody can reach.
+      rm -rf "$SP"/cryptography "$SP"/cryptography-*.dist-info; \
+      # NOT trimmed: openai/resources/* and openai/types/*. Deleting the unused
+      # surfaces (beta, realtime, evals, …) passes `from openai import OpenAI`
+      # but hermes' client init imports them lazily and dies with
+      # "No module named 'openai.types.beta'". 13MB stays.
+
+      find /opt/hermes/venv -maxdepth 3 -type d -name locales -exec sh -c \
+        'find "$1" -maxdepth 1 -name "*.yaml" ! -name "en.yaml" -delete' _ {} \; 2>/dev/null || true; \
     fi
 
 # Trim 3: debug symbols in the compiled extensions (cryptography's rust blob
