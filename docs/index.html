@@ -417,19 +417,25 @@
         const dbg = (m) => window.__dbg.push(Date.now() + " " + m);
         const be = model + " · " + backend;
         let seenState = false;
+        // A silent progress bar during a two-minute emulated boot reads as a hang,
+        // so every status line carries the elapsed time and the phase it is in.
+        const bootT0 = Date.now();
+        let phase = "kernel resuming";
+        const elapsed = () => Math.round((Date.now() - bootT0) / 1000) + "s";
+        const tick = setInterval(() => {
+          if (/⚕/.test(lastLines(xterm, 34))) { clearInterval(tick); return; }
+          status(phase + " — " + elapsed() + " elapsed (emulated x86, first boot takes ~2 min) · " + be, 100);
+        }, 1000);
         const timer = setInterval(() => {
           const tail = lastLines(xterm, 14);
           if (!seenState && /\[state\]/.test(tail)) {
             seenState = true;
-            status("Alpine up — restoring browser-held state…", 100);
-          }
-          if (/warming module cache/.test(tail)) {
-            status("Alpine up — warming hermes' module cache (buys it back on your first message)…", 100);
+            phase = "Alpine up, restoring browser-held state";
           }
           if (/\[hermes\] starting/.test(tail)) {
             dbg("boot: hermes launching");
             clearInterval(timer);
-            status("hermes starting — ~2 min under emulation, then it stays warm · " + be, 100);
+            phase = "hermes importing (the slow part: emulated disk)";
             // Once prompt_toolkit takes the screen there is no line-oriented
             // marker left to match, so watch for the TUI's own status glyph.
             // (Matching "Hermes" would hit the boot banner immediately.)

@@ -173,8 +173,12 @@ mkdir -p "$WORKDIR" /var/log
 cat /etc/hermes-banner 2>/dev/null
 restore_state
 write_config
-echo "[hermes] warming module cache (first turn would otherwise pay for it)…"
-warm_imports
+# Deferred, never blocking: the TUI must be on screen before anything else gets
+# disk time. Running this ahead of hermes (sequentially) delayed the first paint
+# by minutes and looked like a hang; running it *concurrently* with hermes'
+# startup was worse still. 90s in, the TUI is up and idle, so the reads that the
+# first turn would otherwise pay for happen while nobody is waiting.
+{ sleep 90; warm_imports; } &
 
 if [ -n "$PERSIST_URL" ] && [ -n "$PASSPHRASE" ]; then
     watch_save_requests >>"$LOG" 2>&1 &
