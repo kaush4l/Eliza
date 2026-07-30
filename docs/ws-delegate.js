@@ -4,11 +4,13 @@ function delegate(worker, workerImageName, address, workerImageData) {
     var streamStatus = new Int32Array(shared, 4, 1);
     var streamLen = new Int32Array(shared, 8, 1);
     var streamData = new Uint8Array(shared, 12);
-    // Chunked images are reassembled in the page and handed over as bytes; only
-    // a single-file ?image=<url> can be fetched by name inside the worker.
+    // Chunked images are streamed and compiled in the page, then handed over as a
+    // WebAssembly.Module (not transferable — structured clone shares it); only a
+    // single-file ?image=<url> can be fetched by name inside the worker.
     if (workerImageData) {
         worker.postMessage({type: "init", buf: shared, imagename: workerImageName,
-                            imagedata: workerImageData}, [workerImageData]);
+                            imagedata: workerImageData},
+                           workerImageData instanceof ArrayBuffer ? [workerImageData] : []);
     } else {
         worker.postMessage({type: "init", buf: shared, imagename: workerImageName});
     }

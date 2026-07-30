@@ -38,10 +38,20 @@ ARG TRIM_UNUSED=1
 RUN set -eux; \
     if [ "$TRIM_UNUSED" = "1" ]; then \
       SP=/opt/hermes/venv/lib/python3.12/site-packages; \
-      rm -rf "$SP"/gateway "$SP"/tui_gateway "$SP"/acp_adapter \
+      rm -rf "$SP"/gateway "$SP"/tui_gateway \
              "$SP"/batch_runner.py "$SP"/trajectory_compressor.py \
              "$SP"/uvloop "$SP"/uvloop-*.dist-info \
              "$SP"/PIL "$SP"/pillow.libs "$SP"/pillow-*.dist-info; \
+      # tui_dist is a 3.4MB Node bundle behind the dashboard's /api/pty; there is
+      # no node in this image, so it can never run. Its importer is function-local
+      # (web_server.py), unlike acp_adapter below, so removing it breaks nothing.
+      rm -rf "$SP"/hermes_cli/tui_dist; \
+      # NOT trimmed: acp_adapter (236KB). model_tools.handle_function_call imports
+      # acp_adapter.edit_approval inside a try/except that fails CLOSED — with the
+      # package gone, ModuleNotFoundError is caught and write_file/patch return
+      # {"error": "Edit approval denied: approval guard failed"} on every call.
+      # Trimming it silently disabled the agent's two file-writing tools; HERMES_YOLO_MODE
+      # does not help, because this is the exception path, not an approval decision.
       rm -rf "$SP"/plugins/platforms "$SP"/plugins/spotify "$SP"/plugins/video_gen \
              "$SP"/plugins/image_gen "$SP"/plugins/teams_pipeline \
              "$SP"/plugins/google_meet "$SP"/plugins/kanban; \

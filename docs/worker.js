@@ -22,16 +22,20 @@ onmessage = (msg) => {
     var listenfd = 3;
     var imgPromise;
     if (getImagedata()) {
-        dbg("worker: using transferred image data");
+        dbg("worker: using image handed over by the page");
         imgPromise = Promise.resolve(getImagedata());
     } else {
-        dbg("worker: fetching image " + String(getImagename()).slice(0, 60));
-        imgPromise = fetch(getImagename(), { credentials: 'same-origin' })
-            .then((resp) => resp['arrayBuffer']());
+        // ?image=<url>: compile while it downloads rather than buffering the
+        // whole thing into an ArrayBuffer first (same reason as the chunked
+        // path in index.html — a ~273MB buffer the tab never needs to hold).
+        dbg("worker: streaming image " + String(getImagename()).slice(0, 60));
+        imgPromise = WebAssembly.compileStreaming(
+            fetch(getImagename(), { credentials: 'same-origin' }));
     }
     imgPromise.then((wasm) => {
         {
-            dbg("worker: image ready, " + wasm.byteLength + " bytes");
+            dbg("worker: image ready" +
+                (wasm instanceof WebAssembly.Module ? " (compiled)" : ", " + wasm.byteLength + " bytes"));
             if (netParam) {
                 if (netParam.mode == 'delegate') {
                     args = ['arg0', '--net=socket', '--mac', genmac()];
@@ -138,17 +142,21 @@ function startWasi(wasm, ttyClient, args, env, fds, listenfd, connfd) {
     wasi.wasiImport.poll_oneoff = function () { hb.poll++; hbTick(); return _hbPoll.apply(wasi.wasiImport, arguments); };
     var _hbWrite = wasi.wasiImport.fd_write;
     wasi.wasiImport.fd_write = function () { hb.write++; hbTick(); return _hbWrite.apply(wasi.wasiImport, arguments); };
-    dbg("worker: compiling + instantiating wasm…");
+    // Normally `wasm` is an already-compiled WebAssembly.Module streamed and
+    // compiled by the page, so there is no multi-hundred-MB buffer here at all.
+    // The ?image=<url> path still arrives as bytes and compiles here instead.
+    var pre = (wasm instanceof WebAssembly.Module);
+    dbg("worker: " + (pre ? "instantiating precompiled module…" : "compiling + instantiating wasm…"));
     WebAssembly.instantiate(wasm, {
         "wasi_snapshot_preview1": wasi.wasiImport,
     }).then((inst) => {
         dbg("worker: wasm instantiated, starting VM");
-        // The instantiated module owns its own copy of the code and data, so the
-        // ~300MB source buffer is dead weight from here on. Dropping the only
-        // reference lets the tab reclaim it before the VM (which never returns
-        // from wasi.start) pins the thread.
+        // With bytes, instantiate resolves to {module, instance} and the source
+        // buffer is dead weight from here on; with a Module it resolves to the
+        // Instance itself. Drop every reference either way — wasi.start never
+        // returns, so anything still reachable stays in the tab for the session.
         wasm = null;
-        const instance = inst.instance;
+        const instance = pre ? inst : inst.instance;
         inst = null;
         wasi.start(instance);
     }, (err) => {

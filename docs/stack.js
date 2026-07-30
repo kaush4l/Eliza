@@ -23,10 +23,14 @@ function newStack(worker, workerImageName, stackWorker, stackImageName, workerIm
 
     var vmShared = new SharedArrayBuffer(12 + 4096);
     if (workerImageData) {
-        // Transfer the image bytes directly (zero-copy) instead of having the
-        // worker fetch a huge blob URL.
+        // The page hands the image over directly instead of making the worker
+        // fetch a huge blob URL. It is normally an already-compiled
+        // WebAssembly.Module (see loadImage in index.html), which structured
+        // clone shares rather than copies — and which must NOT appear in the
+        // transfer list, since only ArrayBuffers are transferable.
         worker.postMessage({type: "init", buf: vmShared, imagename: workerImageName,
-                            imagedata: workerImageData}, [workerImageData]);
+                            imagedata: workerImageData},
+                           workerImageData instanceof ArrayBuffer ? [workerImageData] : []);
     } else {
         worker.postMessage({type: "init", buf: vmShared, imagename: workerImageName});
     }

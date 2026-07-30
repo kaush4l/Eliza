@@ -41,6 +41,9 @@
       #calls { max-height: 190px; overflow-y: auto; font-size: 11px; }
       #calls div { padding: 2px 0; border-bottom: 1px solid #161b26; display: flex; gap: 6px; }
       #calls .m { color: #e0af68; min-width: 34px; }
+      #toolbox { font-size: 11px; line-height: 1.7; }
+      #toolbox .m { color: #e0af68; }
+      .muted { color: #8a8f98; }
       #calls .p { color: #8a8f98; flex: 1; }
       #calls .t { color: #9ece6a; }
       #calls .bad .t { color: #f7768e; }
@@ -83,10 +86,26 @@
           </div>
         </div>
         <div class="card">
+          <h2>Turns &amp; tokens</h2>
+          <div class="body">
+            <div class="kv"><span>turns</span><span id="d-turns"><b>0</b></span></div>
+            <div class="kv"><span>tokens in / out</span><span id="d-tok">—</span></div>
+            <div class="kv"><span>cached prefill</span><span id="d-cached">—</span></div>
+            <div class="kv"><span>output speed</span><span id="d-rate">—</span></div>
+            <div class="kv"><span>tools offered</span><span id="d-tools">—</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Tool calls (chosen by the model)</h2>
+          <div class="body">
+            <div id="toolbox" class="muted">none yet</div>
+          </div>
+        </div>
+        <div class="card">
           <h2>API calls (relayed out of the VM)</h2>
           <div class="body">
             <div class="kv"><span>calls</span><span id="d-calls"><b>0</b></span></div>
-            <div class="kv"><span>last turn</span><span id="d-turn">—</span></div>
+            <div class="kv"><span>last call</span><span id="d-turn">—</span></div>
             <div id="calls"></div>
           </div>
         </div>
@@ -141,23 +160,29 @@
       <p><b>Where a turn's time goes.</b> Measured on this build: the model answers in
         the time it always would (the page talks to it directly — first byte in tens of
         milliseconds), and the rest is the Bochs interpreter running CPython. A turn is
-        roughly ~10s of real guest CPU plus the model, and the <em>first</em> turn after
-        boot used to add ~40s of lazy Python imports, since emulated disk reads run at
-        about 1.5 MB/s. Those imports are now warmed during boot, hermes' auto-title
-        second model call is off, and the idle TUI repaint is disabled.</p>
-      <p><b>Why hermes' own web dashboard is not exposed.</b> The VM reaches the network
-        only by handing HTTP requests to this page (the c2w proxy is outbound-only);
-        nothing can dial <em>into</em> the guest, so a uvicorn server inside it is
-        unreachable — and tunnelling every dashboard asset back through a poll channel
-        would be slower than the terminal it replaces. The panel on the right is the
-        page-side equivalent: endpoint, model, live context use, agent state and every
-        relayed API call with timings, all rendered at native speed and costing the
-        guest nothing. If you want the real dashboard, run c2w-net locally and boot with
+        roughly ~10s of real guest CPU plus the model. Emulated disk is ~1.5 MB/s on the
+        many-small-files access pattern Python imports produce (~10 MB/s on one large
+        contiguous read), so the <em>first</em> turn used to add ~40s of lazy imports;
+        those are now warmed 90s into boot, once the TUI is already on screen and idle.
+        Hermes' auto-title second model call is off and the idle TUI repaint is disabled.</p>
+      <p><b>Why hermes' own web dashboard is not exposed.</b> Not because the guest is
+        unreachable in principle — the gvisor netstack this page runs for the VM does
+        have a <code>Dial</code>, so a patched proxy could open a TCP connection inward.
+        It is not worth it: the dashboard is uvicorn + FastAPI <em>inside</em> the
+        emulator, where a single endpoint costs ~0.5–7s of guest CPU (measured natively
+        and scaled by this build's ~60× factor) and a full SPA paint is 15–30 of them.
+        Tunnelling it would spend the machine on rendering a second UI beside the
+        terminal. The panel on the right instead reads the agent's real numbers out of
+        traffic that already crosses this page — the endpoint's own
+        <code>usage</code> counts, the tool calls the model chose, turn boundaries,
+        timings — at native speed, costing the guest nothing. If you want the real
+        dashboard, run c2w-net locally and boot with
         <code>?net=delegate=ws://…</code>, which gives the guest actual TCP.</p>
     </details>
     <script src="https://cdn.jsdelivr.net/npm/xterm@4.17.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-pty@0.9.4/index.js"></script>
     <script src="./stack.js"></script>
+    <script src="./telemetry.js"></script>
     <script src="./ws-delegate.js"></script>
     <script>
       // Anti-throttle: hidden tabs clamp window timers to >=1 tick/min, which
@@ -210,6 +235,10 @@
       // hit the temporal dead zone, and inside an async function that rejection is
       // silent — the page would just sit on "preparing…".
       let llmCtx = 0;
+      // Same reason: startDashboard() runs inside that IIFE, so anything it
+      // touches must be initialised before the IIFE starts, not further down.
+      const track = Telemetry.newTracker();
+      const calls = track.calls;
       (async () => {
         const params = new URLSearchParams(location.search);
         if (!params.has("net")) {
@@ -304,49 +333,62 @@
         }
       }
 
-      // Fetch the gzipped image chunks (kept <100MB each for GitHub), stream
-      // them through DecompressionStream into one ArrayBuffer that gets
-      // transferred (zero-copy) to the VM worker.
+      // The image never exists as a buffer. The chunks (kept <100MB each for
+      // GitHub) are concatenated into one stream, inflated by DecompressionStream
+      // and fed straight to compileStreaming, so the ~273MB of inflated bytes are
+      // consumed by the compiler as they arrive instead of being materialised in
+      // JS first. That removes a whole 273MB from the tab's peak — the buffered
+      // version held the JS copy, the engine's compiled copy AND the VM's 1004MB
+      // of linear memory at the same time — and overlaps compilation with the
+      // download rather than starting it after the last byte.
+      //
+      // The gzip itself stays: GitHub Pages does compress application/wasm on the
+      // wire (measured), but shipping the image raw would mean 273MB of binary in
+      // the repo per rebuild, in 3 chunks instead of 1, at a compression ratio
+      // Fastly picks. 91.6MB, deterministic, one file, is the better trade.
+      function imageStream(mf, onProgress) {
+        let i = 0, rd = null;
+        return new ReadableStream({
+          async pull(c) {
+            for (;;) {
+              if (!rd) {
+                if (i >= mf.parts.length) { c.close(); return; }
+                // gz_total in the query string busts browser/CDN caches whenever
+                // the image content changes (part filenames stay the same).
+                const name = mf.parts[i++];
+                const resp = await fetch("wasm/" + name + "?g=" + mf.gz_total);
+                if (!resp.ok) throw new Error(name + ": HTTP " + resp.status);
+                rd = resp.body.getReader();
+              }
+              const { value, done } = await rd.read();
+              if (done) { rd = null; continue; }
+              onProgress(value.length);
+              c.enqueue(value);
+              return;
+            }
+          },
+        });
+      }
+
       async function loadImage() {
         status("loading image manifest…", 0);
         const mf = await (await fetch("wasm/manifest.json", { cache: "no-store" })).json();
-        const raw = new Uint8Array(mf.raw_total);
-        let rawOff = 0;
-        const ds = new DecompressionStream("gzip");
-        const drained = (async () => {
-          const r = ds.readable.getReader();
-          for (;;) {
-            const { value, done } = await r.read();
-            if (done) break;
-            if (rawOff + value.length > raw.length) throw new Error("image larger than manifest raw_total");
-            raw.set(value, rawOff);
-            rawOff += value.length;
-          }
-        })();
-        const w = ds.writable.getWriter();
         let got = 0;
         const totalMB = Math.round(mf.gz_total / 1048576);
-        for (const name of mf.parts) {
-          // gz_total in the query string busts browser/CDN caches whenever
-          // the image content changes (part filenames stay the same).
-          const resp = await fetch("wasm/" + name + "?g=" + mf.gz_total);
-          if (!resp.ok) throw new Error(name + ": HTTP " + resp.status);
-          const rd = resp.body.getReader();
-          for (;;) {
-            const { value, done } = await rd.read();
-            if (done) break;
-            got += value.length;
-            await w.write(value);
-            const pct = Math.round(got / mf.gz_total * 90);
-            status("downloading Hermes image — " + Math.round(got / 1048576) +
-                   " / " + totalMB + " MB (" + Math.round(got / mf.gz_total * 100) + "%)", pct);
-          }
-        }
-        await w.close();
-        await drained;
-        if (rawOff !== raw.length) throw new Error("image truncated: " + rawOff + " of " + raw.length + " bytes");
-        status("image unpacked (" + Math.round(mf.raw_total / 1048576) + " MB) — starting VM…", 95);
-        return raw.buffer;
+        const onProgress = (n) => {
+          got += n;
+          status("downloading + compiling Hermes image — " + Math.round(got / 1048576) +
+                 " / " + totalMB + " MB (" + Math.round(got / mf.gz_total * 100) + "%)",
+                 Math.round(got / mf.gz_total * 90));
+        };
+        const body = imageStream(mf, onProgress).pipeThrough(new DecompressionStream("gzip"));
+        // compileStreaming demands the wasm MIME type, so wrap the stream in a
+        // Response that declares it. A truncated image fails here, in the
+        // compiler, rather than needing a separate length check.
+        const mod = await WebAssembly.compileStreaming(
+          new Response(body, { headers: { "content-type": "application/wasm" } }));
+        status("image compiled (" + Math.round(mf.raw_total / 1048576) + " MB) — starting VM…", 95);
+        return mod;
       }
 
       const COLS = 100, ROWS = 32;
@@ -455,7 +497,10 @@
       // plus the TUI's status line), so it costs the emulated guest nothing.
       // Hermes' built-in web dashboard cannot be used: it listens inside the VM
       // and the c2w proxy is outbound-only, so nothing can dial in.
-      const calls = [];
+      // Both bodies of every relayed call are visible here, so `track` (declared
+      // above) reads the agent's real numbers — usage, tool choices, turn
+      // boundaries — out of traffic that has to cross this page anyway.
+      // See docs/telemetry.js.
       function instrumentRelay() {
         const origFetch = window.fetch;
         window.fetch = function (u, o) {
@@ -463,60 +508,92 @@
           if (!window.__backend || url.indexOf(window.__backend.replace(/\/v1$/, "")) !== 0) {
             return origFetch.apply(this, arguments);
           }
-          const t0 = performance.now();
-          const rec = { m: (o && o.method) || "GET", p: url.replace(/^https?:\/\/[^/]+/, ""), t0: t0 };
-          calls.push(rec);
-          if (calls.length > 60) calls.shift();
+          const rec = track.begin((o && o.method) || "GET",
+                                  url.replace(/^https?:\/\/[^/]+/, ""),
+                                  o && o.body, performance.now());
           return origFetch.apply(this, arguments).then((r) => {
             rec.status = r.status;
-            rec.head = Math.round(performance.now() - t0);
+            rec.head = Math.round(performance.now() - rec.t0);
             if (r.body) {
+              // tee: one branch is parsed here, the other goes to the guest
+              // untouched. Never consume the guest's copy.
               const [a, b] = r.body.tee();
               (async () => {
                 const rd = a.getReader();
-                let n = 0;
-                for (;;) { const { done } = await rd.read(); if (done) break; n++; }
-                rec.total = Math.round(performance.now() - t0);
-                rec.chunks = n;
+                for (;;) {
+                  const { done, value } = await rd.read();
+                  if (done) break;
+                  track.chunk(rec, value, performance.now());
+                  renderCalls();
+                }
+                track.finish(rec, performance.now());
                 renderCalls();
               })();
               return new Response(b, { status: r.status, statusText: r.statusText, headers: r.headers });
             }
-            rec.total = rec.head;
+            track.finish(rec, performance.now());
             renderCalls();
             return r;
           }).catch((e) => {
             rec.status = "ERR";
-            rec.total = Math.round(performance.now() - t0);
+            track.finish(rec, performance.now());
             renderCalls();
             throw e;
           });
         };
       }
 
+      const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + "K" : String(n));
       function renderCalls() {
-        const box = document.getElementById("calls");
-        document.getElementById("d-calls").innerHTML = "<b>" + calls.length + "</b>";
+        const s = track.stats;
+        const set = (id, txt) => { document.getElementById(id).textContent = txt; };
+        document.getElementById("d-calls").innerHTML = "<b>" + s.apiCalls + "</b>";
+        document.getElementById("d-turns").innerHTML = "<b>" + s.turns + "</b>";
+        set("d-tok", s.tin || s.tout ? fmtK(s.tin) + " / " + fmtK(s.tout) : "—");
+        set("d-cached", s.cached ? fmtK(s.cached) + " of " + fmtK(s.tin) +
+              " (" + Math.round((s.cached / s.tin) * 100) + "%)" : "—");
+        set("d-tools", s.toolsOffered ? s.toolsOffered + " schemas per call" : "—");
+        if (s.model) set("d-model", s.model);
+
         const done = calls.filter((c) => c.total !== undefined);
         if (done.length) {
           const last = done[done.length - 1];
-          document.getElementById("d-turn").textContent =
-            (last.total / 1000).toFixed(1) + "s model · " + last.head + "ms to first byte";
+          set("d-turn", (last.total / 1000).toFixed(1) + "s · " +
+                (last.ttft !== undefined ? last.ttft : last.head) + "ms to first byte");
+          const rated = done.filter((c) => c.rate);
+          if (rated.length) {
+            const r = rated[rated.length - 1];
+            // Prefill is reported separately because on a local model it is most
+            // of the wait: hermes re-sends the whole tool schema every call.
+            set("d-rate", r.rate + " tok/s decode · " +
+                  (r.prefill / 1000).toFixed(1) + "s prefill");
+          }
         }
+
+        const tb = document.getElementById("toolbox");
+        if (s.tools.size) {
+          tb.className = "";
+          tb.innerHTML = [...s.tools.entries()].sort((a, b) => b[1] - a[1])
+            .map(([n, c]) => '<span class="m">' + c + "×</span> " + n).join("<br>");
+        }
+
+        const box = document.getElementById("calls");
         box.innerHTML = "";
         for (const c of calls.slice(-12).reverse()) {
           const d = document.createElement("div");
           if (c.status !== 200 && c.status !== undefined) d.className = "bad";
-          d.innerHTML = '<span class="m">' + c.m + '</span><span class="p">' + c.p +
-            '</span><span class="t">' + (c.total === undefined ? "…" :
-              (c.total / 1000).toFixed(1) + "s" + (c.chunks ? " / " + c.chunks + " chunks" : "")) + "</span>";
+          const detail = c.total === undefined ? "…"
+            : (c.total / 1000).toFixed(1) + "s" + (c.tout ? " / " + c.tout + " tok" : "");
+          d.innerHTML = '<span class="m">' + c.m + '</span><span class="p">' +
+            (c.tools ? c.tools.join(",") + " ← " : "") + c.p +
+            '</span><span class="t">' + detail + "</span>";
           box.appendChild(d);
         }
       }
 
       function refreshDash() {
         document.getElementById("d-endpoint").textContent = llmBase() || "not configured";
-        document.getElementById("d-model").textContent =
+        document.getElementById("d-model").textContent = track.stats.model ||
           document.getElementById("llmmodel").value.trim() || "not configured";
       }
 
@@ -524,27 +601,53 @@
         instrumentRelay();
         refreshDash();
         setInterval(() => {
-          // Context usage and agent state come from the TUI's own status line —
-          // no extra work asked of the guest.
+          // Context use prefers the endpoint's own prompt_tokens count over the
+          // TUI's status line: the usage frame is exact and arrives per call,
+          // whereas the status line is hermes' own estimate rendered as ANSI.
           const tail = lastLines(xterm, 34);
-          const ctx = tail.match(/([\d.]+K)\s*\/\s*([\d.]+K)/);
-          document.getElementById("d-ctx").textContent = ctx ? ctx[1] + " / " + ctx[2] : "—";
-          const busy = /msg=interrupt|\.\.\./.test(tail);
+          const el = document.getElementById("d-ctx");
+          const p = track.stats.promptLast;
+          if (p) {
+            el.textContent = fmtK(p) + (llmCtx ? " / " + fmtK(llmCtx) +
+              " (" + Math.round((p / llmCtx) * 100) + "%)" : " prompt tokens");
+          } else {
+            const ctx = tail.match(/([\d.]+K)\s*\/\s*([\d.]+K)/);
+            el.textContent = ctx ? ctx[1] + " / " + ctx[2] : "—";
+          }
+          // State comes from the relay, not from the TUI's pixels: an unfinished
+          // call means the agent is blocked on the model, and a finished one that
+          // ended in tool_calls means it is off running that tool. Pattern-matching
+          // the ANSI for "…" reported "thinking" at an idle prompt.
+          const done = calls.filter((c) => c.total !== undefined);
+          const last = done[done.length - 1];
           document.getElementById("d-state").textContent =
-            /⚕/.test(tail) ? (busy ? "thinking" : "ready") : "booting…";
+            !/⚕/.test(tail) ? "booting…"
+              : calls.some((c) => c.total === undefined) ? "waiting on the model"
+              : last && last.fin === "tool_calls" ? "running a tool"
+              : "ready";
         }, 2000);
         // Real tab footprint (wasm memory included) needs the cross-origin-isolated
         // API; usedJSHeapSize misses the VM entirely, which is most of it.
         const showMem = (mb, what) => {
           document.getElementById("d-mem").textContent = mb + " MB " + what;
         };
+        const heap = () => {
+          // Fallback, and it undercounts badly: usedJSHeapSize excludes the VM's
+          // ~1GB of wasm linear memory, which is nearly all of this tab.
+          if (performance.memory) {
+            showMem(Math.round(performance.memory.usedJSHeapSize / 1048576), "js heap only");
+          }
+        };
         const pollMem = () => {
+          // Only the cross-origin-isolated API sees wasm memory. It can also
+          // reject (or never settle) depending on the profile — fall back rather
+          // than leaving the field on "—" forever.
           if (performance.measureUserAgentSpecificMemory) {
             performance.measureUserAgentSpecificMemory()
               .then((m) => showMem(Math.round(m.bytes / 1048576), "total"))
-              .catch(() => {});
-          } else if (performance.memory) {
-            showMem(Math.round(performance.memory.usedJSHeapSize / 1048576), "js heap");
+              .catch(heap);
+          } else {
+            heap();
           }
         };
         pollMem();

@@ -151,11 +151,14 @@ watch_save_requests() {
 # otherwise stall the FIRST message for ~40s. Importing them in a throwaway
 # process during boot moves that I/O behind the progress bar the user is already
 # watching. Measured: identical agent turn 1m45s cold vs 1m4s with the cache warm.
-# Runs to completion BEFORE hermes starts, on purpose. Backgrounding it was worse
-# than doing nothing: the two processes raced for the same seek-bound reads and the
-# warm-up's `hermes_state` import can hold the session-DB lock, which left the TUI
-# unpainted for >12 minutes. Sequential costs ~20s of boot and asks for no locks.
-# hermes_state is left out for the same reason — nothing here may touch the DB.
+# Scheduling is the whole trick, and both obvious orderings are wrong: running it to
+# completion before hermes delays the first paint by ~90s and reads as a hang, while
+# starting it alongside hermes' own startup left the TUI unpainted for >12 minutes
+# (two processes racing the same seek-bound reads, and `hermes_state` can hold the
+# session-DB lock). It is deferred instead — see the call site below.
+# hermes_state is excluded for that lock: nothing here may touch the DB.
+# All nine names below are verified importable in this image; a name that did not
+# resolve would be swallowed by the except and warm nothing at all.
 warm_imports() {
     /opt/hermes/venv/bin/python3 -c '
 import importlib
