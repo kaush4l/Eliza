@@ -64,9 +64,15 @@
           If the browser asks to allow local network access, allow it.</li>
         <li>Reload to apply a URL or model change after the VM has started.</li>
       </ol>
-      <p>This page may be served over https, so the model server must answer on
-        loopback of the machine running the browser (browsers exempt
-        <code>127.0.0.1</code> from mixed-content rules; other LAN hosts are blocked).</p>
+      <p><b>On the hosted (https) page, Chrome gates local-network requests.</b>
+        Loopback is exempt from mixed-content rules, but <em>Local Network Access</em>
+        is a separate permission: the first call to <code>127.0.0.1</code> is blocked
+        (<code>net::ERR_FAILED</code>, the agent then sits waiting) until you allow it
+        — address-bar icon → Site settings → <em>Local network access</em> → Allow,
+        then reload. Two alternatives that need no permission: serve this same
+        <code>docs/</code> directory yourself (<code>python3 serve.py 8917</code>,
+        then open <code>http://127.0.0.1:8917/</code>), or point the LLM field at a
+        remote OpenAI-compatible endpoint over https.</p>
       <p><b>State:</b> <code>~/.hermes</code> (sessions, memories, skills) and
         <code>~/work</code> are sealed with AES-256 under a browser-local passphrase and
         stored <em>in this browser</em> (Cache API), then restored on the next boot.
@@ -187,8 +193,15 @@
           try { localStorage.setItem(LS_KEY, JSON.stringify({ url: llmBase(), model: modelIn.value.trim() })); } catch (e) {}
         } catch (e) {
           stat.className = "err";
-          stat.textContent = "unreachable (" + (e.message || e) + ") — server running with CORS on? " +
-            "LM Studio: Enable CORS · Ollama: OLLAMA_ORIGINS=*";
+          // An https page reaching http://127.0.0.1 trips Chrome's Local
+          // Network Access gate, which fails the request outright (no CORS
+          // error, no prompt in some profiles) — call that out instead of
+          // sending people to look at CORS settings that are already fine.
+          const local = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(llmBase());
+          stat.textContent = "unreachable (" + (e.message || e) + ") — " +
+            (location.protocol === "https:" && local
+              ? "this page is https: allow “Local network access” for this site in Chrome (address-bar icon → Site settings), or run the page locally with serve.py"
+              : "is the server up with CORS on? LM Studio: Enable CORS · Ollama: OLLAMA_ORIGINS=*");
         }
       }
 
